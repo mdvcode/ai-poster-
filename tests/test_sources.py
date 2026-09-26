@@ -285,3 +285,132 @@ async def test_disabled_x_blocks_next_page():
                 {"handle": "chosen", "external_id": "123", "cursor": "10"}
             )
     assert len(calls) == 1
+
+
+def dated_preview(posts, *, older=False):
+    return preview(
+        [
+            (
+                i,
+                f'{body}</div><a class="tgme_widget_message_date">'
+                f'<time datetime="{date}"></time></a><div>',
+            )
+            for i, body, date in posts
+        ],
+        older=older,
+    )
+
+
+async def test_telegram_history_pages_past_baseline_and_stops_at_date_boundary():
+    from ai_poster.sources import publication_time
+
+    calls = []
+    cutoff = publication_time("2026-09-23T12:00:00Z")
+
+    def handler(request):
+        calls.append(request)
+        before = request.url.params.get("before")
+        if before is None:
+            posts = [(20, "Today", "2026-09-26T10:00:00Z")]
+        elif before == "20":
+            posts = [
+                (18, "Too old", "2026-09-23T11:59:59Z"),
+                (19, "Boundary", "2026-09-23T14:00:00+02:00"),
+            ]
+        else:
+            assert before == "18"
+            posts = [(17, "Older", "2026-09-22T12:00:00Z")]
+        return html_response(dated_preview(posts, older=True))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        items, cursor = await TelegramSource(client, lambda *args: True).fetch(
+            {
+                "handle": "chosen",
+                "external_id": "public:chosen",
+                "cursor": "20",
+                "history_since": cutoff,
+            }
+        )
+    assert [i.id for i in items] == ["19", "20"]
+    assert cursor == "20"
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("date", [None, "invalid", "2026-09-24T00:00:00"])
+async def test_history_requires_valid_timezone_aware_publication_date(date):
+    from ai_poster.sources import publication_time
+
+    content = (
+        preview([(20, "No date")]) if date is None else dated_preview([(20, "Bad date", date)])
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: html_response(content))
+    ) as client:
+        with pytest.raises(ValueError):
+            await TelegramSource(client, lambda *args: True).fetch(
+                {
+                    "handle": "chosen",
+                    "external_id": "public:chosen",
+                    "cursor": "20",
+                    "history_since": publication_time("2026-09-23T12:00:00Z"),
+                }
+            )
+
+
+async def test_x_history_uses_time_instead_of_baseline_and_filters_old_posts():
+    from ai_poster.sources import publication_time
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.url.params["start_time"] == "2026-09-23T12:00:00Z"
+        assert "since_id" not in request.url.params
+        assert "created_at" in request.url.params["tweet.fields"]
+        if len(calls) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "20", "text": "new", "created_at": "2026-09-26T10:00:00Z"}],
+                    "meta": {"next_token": "next"},
+                },
+            )
+        assert request.url.params["pagination_token"] == "next"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "19", "text": "boundary", "created_at": "2026-09-23T12:00:00Z"},
+                    {"id": "18", "text": "old", "created_at": "2026-09-23T11:59:59Z"},
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        items, cursor = await XSource("token", client, lambda *args: True).fetch(
+            {
+                "handle": "chosen",
+                "external_id": "123",
+                "cursor": "20",
+                "history_since": publication_time("2026-09-23T12:00:00Z"),
+            }
+        )
+    assert [i.id for i in items] == ["19", "20"]
+    assert cursor == "20"
+
+
+async def test_x_history_missing_date_fails_without_partial_results():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": [{"id": "20", "text": "undated"}]})
+        )
+    ) as client:
+        with pytest.raises(ValueError):
+            await XSource("token", client, lambda *args: True).fetch(
+                {
+                    "handle": "chosen",
+                    "external_id": "123",
+                    "cursor": "20",
+                    "history_since": 1_790_164_800,
+                }
+            )

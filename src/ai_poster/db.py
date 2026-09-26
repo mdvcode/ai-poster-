@@ -18,7 +18,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS sources (
                 id INTEGER PRIMARY KEY, kind TEXT NOT NULL, handle TEXT NOT NULL,
                 external_id TEXT NOT NULL, cursor TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
-                error TEXT, UNIQUE(kind, external_id)
+                error TEXT, history_since REAL, UNIQUE(kind, external_id)
             );
             CREATE TABLE IF NOT EXISTS posts (
                 id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL REFERENCES sources(id),
@@ -31,6 +31,14 @@ class Store:
             );
             CREATE INDEX IF NOT EXISTS posts_work ON posts(state, next_attempt, id);
         """)
+        # Upgrade existing installations once; keep the fixed cutoff across failed reads/restarts.
+        if "history_since" not in {r[1] for r in self.db.execute("PRAGMA table_info(sources)")}:
+            with self.db:
+                self.db.execute("BEGIN")
+                self.db.execute("ALTER TABLE sources ADD COLUMN history_since REAL")
+                self.db.execute(
+                    "UPDATE sources SET history_since=? WHERE active=1", (time.time() - 72 * 3600,)
+                )
         # A crash after sending but before recording success cannot be safely retried.
         with self.db:
             self.db.execute("UPDATE posts SET state='uncertain' WHERE state='sending'")
@@ -62,10 +70,12 @@ class Store:
         with self.db:
             self.db.execute(
                 """
-                INSERT INTO sources(kind,handle,external_id,cursor) VALUES (?,?,?,?)
-                ON CONFLICT(kind,external_id) DO UPDATE SET active=1,handle=excluded.handle
+                INSERT INTO sources(kind,handle,external_id,cursor,history_since) VALUES (?,?,?,?,?)
+                ON CONFLICT(kind,external_id) DO UPDATE SET active=1,handle=excluded.handle,
+                history_since=CASE WHEN sources.active=0 THEN excluded.history_since
+                                   ELSE sources.history_since END
             """,
-                (kind, handle, external_id, cursor),
+                (kind, handle, external_id, cursor, time.time() - 72 * 3600),
             )
 
     def remove_source(self, source_id: int):
@@ -95,7 +105,8 @@ class Store:
                     (source_id, item.id, item.text, item.url, target, digest, time.time()),
                 )
             self.db.execute(
-                "UPDATE sources SET cursor=?,error=NULL WHERE id=?", (cursor, source_id)
+                "UPDATE sources SET cursor=?,error=NULL,history_since=NULL WHERE id=?",
+                (cursor, source_id),
             )
 
     def post(self, post_id: int):
