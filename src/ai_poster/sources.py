@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 from bs4 import BeautifulSoup
@@ -10,6 +11,14 @@ class Item:
     id: str
     text: str
     url: str
+    published_at: float | None = None
+
+
+def publication_time(value: str) -> float:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        raise ValueError("У даты публикации отсутствует часовой пояс.")
+    return parsed.timestamp()
 
 
 def normalize_handle(kind: str, value: str) -> str:
@@ -72,7 +81,9 @@ class TelegramSource:
                     if href.startswith(("https://", "http://")) and href != link.get_text():
                         link.append(f" ({href})")
                 body = text.get_text().strip()
-            items.append(Item(match[2], body, f"https://t.me/{handle}/{match[2]}"))
+            date = post.select_one(".tgme_widget_message_date time[datetime]")
+            published_at = publication_time(date["datetime"]) if date else None
+            items.append(Item(match[2], body, f"https://t.me/{handle}/{match[2]}", published_at))
         has_older = soup.select_one("a.tme_messages_more[data-before]") is not None
         return sorted(items, key=lambda item: int(item.id)), has_older
 
@@ -92,6 +103,8 @@ class TelegramSource:
         ):
             raise PermissionError("Канал отсутствует в разрешённом списке публичных источников.")
         cursor = int(source["cursor"])
+        history_since = dict(source).get("history_since")
+        newest = cursor
         before = None
         collected = {}
         for _ in range(50):
@@ -103,13 +116,22 @@ class TelegramSource:
                     raise ValueError("Неполная история; курсор не изменён.")
                 return [], source["cursor"]
             for item in items:
-                if int(item.id) > cursor:
+                newest = max(newest, int(item.id))
+                if history_since is not None:
+                    if item.published_at is None:
+                        raise ValueError("Нет даты публикации; загрузка истории не завершена.")
+                    if item.published_at >= history_since:
+                        collected[int(item.id)] = item
+                elif int(item.id) > cursor:
                     collected[int(item.id)] = item
             oldest = min(int(item.id) for item in items)
-            if oldest <= cursor or not has_older:
-                return [collected[k] for k in sorted(collected)], str(
-                    max(collected, default=cursor)
-                )
+            reached_boundary = (
+                all(item.published_at < history_since for item in items)
+                if history_since is not None
+                else oldest <= cursor
+            )
+            if reached_boundary or not has_older:
+                return [collected[k] for k in sorted(collected)], str(newest)
             if before is not None and oldest >= before:
                 raise ValueError("Пагинация Telegram не продвигается; курсор не изменён.")
             before = oldest
@@ -158,9 +180,16 @@ class XSource:
         params = {
             "max_results": 100,
             "exclude": "retweets,replies",
-            "tweet.fields": "note_tweet,referenced_tweets",
+            "tweet.fields": "note_tweet,referenced_tweets,created_at",
         }
-        if source["cursor"] != "0":
+        history_since = dict(source).get("history_since")
+        if history_since is not None:
+            params["start_time"] = (
+                datetime.fromtimestamp(history_since, UTC)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z")
+            )
+        elif source["cursor"] != "0":
             params["since_id"] = source["cursor"]
         items = []
         cursor = int(source["cursor"])
@@ -170,6 +199,11 @@ class XSource:
             page = await self.get(f"users/{source['external_id']}/tweets", params)
             for post in page.get("data", []):
                 cursor = max(cursor, int(post["id"]))
+                if history_since is not None:
+                    if not post.get("created_at"):
+                        raise ValueError("X не вернул дату публикации; история не загружена.")
+                    if publication_time(post["created_at"]) < history_since:
+                        continue
                 # Quotes require context from another post; do not rewrite incomplete material.
                 if post.get("referenced_tweets"):
                     continue
