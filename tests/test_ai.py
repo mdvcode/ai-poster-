@@ -43,6 +43,8 @@ REVIEW = {
     "changed_facts": [],
     "reason": "Смысл сохранён",
     "confidence": 0.98,
+    "independent_presentation": True,
+    "presentation_reason": "Самостоятельная подача фактов",
 }
 
 
@@ -178,4 +180,69 @@ async def test_block_reason_reports_concrete_difference_despite_positive_summary
             settings,
             completion(REWRITE),
             completion(REVIEW | {"added_claims": ["рублей"], "reason": "В целом всё верно"}),
+        )
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+async def test_similar_draft_is_recomposed_and_rechecked(settings, claude_settings, provider):
+    config = claude_settings if provider == "anthropic" else settings
+    wrap = claude_completion if provider == "anthropic" else completion
+    revised = REWRITE | {
+        "text": "Возможно, итоговая прибыль оказалась выше $10 млн — такую сумму она уже составила."
+    }
+    result, requests = await rewrite_with_responses(
+        config,
+        wrap(REWRITE),
+        wrap(
+            REVIEW
+            | {
+                "independent_presentation": False,
+                "presentation_reason": "Построчная замена синонимами",
+            }
+        ),
+        wrap(revised),
+        wrap(REVIEW),
+    )
+    assert result.startswith(revised["text"])
+    assert len(requests) == 4
+    user_index = 0 if provider == "anthropic" else 1
+    feedback = json.loads(requests[2]["messages"][user_index]["content"])
+    assert feedback["previous_draft"] == REWRITE["text"]
+    assert feedback["source"] == "Profit was $10m, possibly more."
+    second_review = json.loads(requests[3]["messages"][user_index]["content"])
+    assert second_review["candidate"] == revised["text"]
+
+
+async def test_repeated_similarity_is_blocked_after_one_retry(settings):
+    similar = REVIEW | {"independent_presentation": False, "presentation_reason": "Слишком близко"}
+    with pytest.raises(QualityError, match="слишком похож"):
+        await rewrite_with_responses(
+            settings,
+            completion(REWRITE),
+            completion(similar),
+            completion(REWRITE),
+            completion(similar),
+        )
+
+
+async def test_identical_text_is_blocked_even_if_ai_approves_originality(settings):
+    copied = REWRITE | {"text": "PROFIT was $10m — possibly more!"}
+    with pytest.raises(QualityError, match="Дословное повторение"):
+        await rewrite_with_responses(
+            settings,
+            completion(copied),
+            completion(REVIEW),
+            completion(copied),
+            completion(REVIEW),
+        )
+
+
+async def test_recomposition_still_rejects_changed_facts(settings):
+    with pytest.raises(QualityError, match="Изменено: 10m became 20m"):
+        await rewrite_with_responses(
+            settings,
+            completion(REWRITE),
+            completion(REVIEW | {"independent_presentation": False}),
+            completion(REWRITE),
+            completion(REVIEW | {"changed_facts": ["10m became 20m"]}),
         )
