@@ -105,11 +105,14 @@ async def test_telegram_send_errors(worker, store, telegram, code, state):
         assert store.post(1)["next_attempt"] > 0
 
 
-async def test_no_publish_after_pause_or_target_change(worker, store, telegram):
+async def test_no_auto_publish_after_pause_or_manual_publish_to_changed_target(
+    worker, store, telegram
+):
     await worker.cycle()
     telegram.send.reset_mock()
+    store.set("mode", "auto")
     store.set("paused", "1")
-    await worker.publish(1, manual=True)
+    await worker.publish(1, manual=False)
     store.set("paused", "0")
     store.set("target", "-100999")
     await worker.publish(1, manual=True)
