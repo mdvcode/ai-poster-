@@ -44,7 +44,11 @@ class Worker:
                             "callback_data": f"post:{post['id']}:{revision}",
                         },
                         {"text": "Пропустить", "callback_data": f"skip:{post['id']}"},
-                    ]
+                    ],
+                    [
+                        {"text": "📄 Оригинал", "callback_data": f"admin:original:{post['id']}"},
+                        {"text": "⚙️ Админка", "callback_data": "admin:home"},
+                    ],
                 ]
             },
         )

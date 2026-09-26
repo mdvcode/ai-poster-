@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from ai_poster.admin import Admin
 from ai_poster.sources import normalize_handle
 from ai_poster.telegram import TelegramError
 from ai_poster.worker import draft_revision
@@ -8,6 +9,7 @@ from ai_poster.worker import draft_revision
 log = logging.getLogger(__name__)
 HELP = """AI Poster — Telegram/X → черновик → ваш канал.
 
+/admin — админка с кнопками
 /channel @my_channel — подключить канал (бот и вы — администраторы)
 /add telegram @source — добавить Telegram-канал
 /add x @account — добавить X-аккаунт
@@ -38,6 +40,7 @@ class Bot:
         self.worker = worker
         self.telegram = telegram
         self.settings = settings
+        self.admin = Admin(self)
 
     async def reply(self, text: str):
         # 1800 code points fit even with supplementary-plane emoji in UTF-16.
@@ -54,26 +57,38 @@ class Bot:
             or message["chat"].get("id") != self.settings.owner_id
         ):
             return
-        if callback:
-            # Consume update durably before command execution: no command replay after a crash.
-            await self.telegram.call("answerCallbackQuery", callback_query_id=callback["id"])
-            data = callback.get("data", "")
-            fields = data.split(":")
-            if (
-                len(fields) not in {2, 3}
-                or fields[0] not in {"post", "skip"}
-                or not fields[1].isdigit()
-                or (fields[0] == "post" and len(fields) != 3)
-            ):
-                return
-            text = "/" + " ".join(fields)
-        else:
-            text = message.get("text", "")
-        parts = text.split()
-        if not parts:
-            return
-        command, args = parts[0].split("@")[0].lower(), parts[1:]
         try:
+            if callback:
+                await self.telegram.call("answerCallbackQuery", callback_query_id=callback["id"])
+                data = callback.get("data", "")
+                if data.startswith("admin:"):
+                    await self.admin.callback(data, message.get("message_id"))
+                    return
+                fields = data.split(":")
+                if (
+                    len(fields) not in {2, 3}
+                    or fields[0] not in {"post", "skip"}
+                    or not fields[1].isdigit()
+                    or (fields[0] == "post" and len(fields) != 3)
+                ):
+                    return
+                text = "/" + " ".join(fields)
+            else:
+                text = message.get("text", "").strip()
+                if self.store.get("admin_input") and not text.startswith("/"):
+                    await self.admin.input(message)
+                    return
+            parts = text.split()
+            if not parts:
+                return
+            command, args = parts[0].split("@")[0].lower(), parts[1:]
+            self.admin.clear_input()
+            if command in {"/start", "/admin", "/menu", "/cancel"}:
+                await self.admin.home()
+                return
+            if not text.startswith("/"):
+                await self.admin.home()
+                return
             result = await self.command(command, args)
         except (ValueError, IndexError):
             result = "Проверьте аргументы команды и доступ к каналу. Подсказка: /help."
@@ -147,6 +162,7 @@ class Bot:
                 ):
                     return "Канал публикации не может быть источником."
                 self.store.set("target", target)
+                self.store.set("target_label", args[0])
                 return f"Канал {target} подключён. Добавьте источники и выполните /resume."
             if command == "/add":
                 kind, value = args

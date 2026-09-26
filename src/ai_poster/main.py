@@ -77,6 +77,19 @@ async def serve(settings):
             webhook = await telegram.call("getWebhookInfo")
             if webhook.get("url"):
                 raise RuntimeError("У бота настроен webhook. Отключите его перед long polling.")
+            try:
+                await telegram.call(
+                    "setMyCommands",
+                    commands=[
+                        {"command": "admin", "description": "Открыть админку"},
+                        {"command": "start", "description": "Начать работу"},
+                        {"command": "pause", "description": "Остановить сбор и публикации"},
+                        {"command": "help", "description": "Все команды"},
+                    ],
+                    scope={"type": "chat", "chat_id": settings.owner_id},
+                )
+            except Exception as exc:
+                log.warning("Could not set owner command menu: %s", type(exc).__name__)
             worker = Worker(
                 store,
                 {
