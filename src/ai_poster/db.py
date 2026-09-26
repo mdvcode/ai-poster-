@@ -49,6 +49,15 @@ class Store:
     def sources(self):
         return self.db.execute("SELECT * FROM sources WHERE active=1 ORDER BY id").fetchall()
 
+    def source_is_active(self, kind: str, handle: str, external_id: str) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM sources WHERE active=1 AND kind=? AND handle=? AND external_id=?",
+                (kind, handle, external_id),
+            ).fetchone()
+            is not None
+        )
+
     def add_source(self, kind: str, handle: str, external_id: str, cursor: str):
         with self.db:
             self.db.execute(

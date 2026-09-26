@@ -156,8 +156,11 @@ class Bot:
         async with self.worker.lock:
             if command == "/channel":
                 target = await self.telegram.validate_channel(args[0], self.settings.owner_id)
+                chat = await self.telegram.call("getChat", chat_id=target)
+                username = chat.get("username", "").lower() if isinstance(chat, dict) else ""
                 if any(
-                    s["kind"] == "telegram" and s["external_id"] == target
+                    s["kind"] == "telegram"
+                    and (s["external_id"] == target or (username and s["handle"] == username))
                     for s in self.store.sources()
                 ):
                     return "Канал публикации не может быть источником."
@@ -169,6 +172,10 @@ class Bot:
                 if kind not in self.worker.sources:
                     return "Используйте /add telegram @channel или /add x @account."
                 handle = normalize_handle(kind, value)
+                if kind == "telegram" and self.store.get("target"):
+                    chat = await self.telegram.call("getChat", chat_id=self.store.get("target"))
+                    if isinstance(chat, dict) and chat.get("username", "").lower() == handle:
+                        return "Нельзя использовать канал публикации как источник."
                 external_id, cursor = await self.worker.sources[kind].resolve(handle)
                 if kind == "telegram" and external_id == self.store.get("target"):
                     return "Нельзя использовать канал публикации как источник."

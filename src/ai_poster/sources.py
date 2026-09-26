@@ -2,8 +2,7 @@ import re
 from dataclasses import dataclass
 
 import httpx
-from telethon import TelegramClient, utils
-from telethon.tl.types import Channel
+from bs4 import BeautifulSoup
 
 
 @dataclass(frozen=True)
@@ -17,6 +16,8 @@ def normalize_handle(kind: str, value: str) -> str:
     domains = r"(?:t\.me|telegram\.me)" if kind == "telegram" else r"(?:x\.com|twitter\.com)"
     value = re.sub(rf"^https?://{domains}/", "", value.strip(), flags=re.I)
     value = value.removeprefix("@").rstrip("/")
+    if kind == "telegram" and value.startswith("s/"):
+        value = value[2:]
     pattern = r"[A-Za-z][A-Za-z0-9_]{3,31}" if kind == "telegram" else r"[A-Za-z0-9_]{1,15}"
     if not re.fullmatch(pattern, value):
         raise ValueError("Укажите @username или ссылку на публичный канал/аккаунт.")
@@ -24,46 +25,101 @@ def normalize_handle(kind: str, value: str) -> str:
 
 
 class TelegramSource:
-    def __init__(self, client: TelegramClient | None):
-        self.client = client
+    """Anonymous public previews. No Telegram account, session, or Bot API credentials."""
 
-    async def entity(self, handle: str):
-        if self.client is None:
-            raise ValueError("Telegram reader не настроен. Выполните ai-poster login.")
-        entity = await self.client.get_entity(handle)
-        if not isinstance(entity, Channel) or not entity.broadcast:
-            raise ValueError("Источник должен быть Telegram-каналом.")
-        return entity
+    def __init__(self, client: httpx.AsyncClient, allowed=None):
+        self.client = client
+        self.allowed = allowed
+
+    async def page(self, handle: str, before: int | None = None):
+        handle = normalize_handle("telegram", handle)
+        # Build a fresh request: never inherit cookies or Authorization from other APIs.
+        request = httpx.Request(
+            "GET",
+            f"https://t.me/s/{handle}",
+            params={"before": before} if before is not None else None,
+        )
+        response = await self.client.send(request, auth=None, follow_redirects=False)
+        response.raise_for_status()
+        if "text/html" not in response.headers.get("content-type", ""):
+            raise ValueError("Telegram не вернул публичную страницу канала.")
+        if len(response.content) > 5_000_000:
+            raise ValueError("Страница Telegram превышает допустимый размер.")
+        soup = BeautifulSoup(response.text, "html.parser")
+        identity = soup.select_one(".tgme_channel_info_header_username")
+        history = soup.select_one(".tgme_channel_history")
+        if (
+            not identity
+            or identity.get_text(strip=True).lstrip("@").lower() != handle
+            or history is None
+        ):
+            raise ValueError("Публичный просмотр этого канала недоступен; вход не выполняется.")
+        items = []
+        for post in history.select(".tgme_widget_message[data-post]"):
+            match = re.fullmatch(r"([A-Za-z0-9_]+)/([0-9]+)", post.get("data-post", ""))
+            if not match or match[1].lower() != handle:
+                raise ValueError("Страница содержит пост другого канала; чтение остановлено.")
+            text = post.select_one(".tgme_widget_message_text")
+            body = ""
+            if text and not any("truncat" in name for name in text.get("class", [])):
+                for element in text.select("script, style"):
+                    element.decompose()
+                for br in text.select("br"):
+                    br.replace_with("\n")
+                # Preserve link destinations as text only; never fetch links, embeds or media.
+                for link in text.select("a[href]"):
+                    href = link.get("href", "")
+                    if href.startswith(("https://", "http://")) and href != link.get_text():
+                        link.append(f" ({href})")
+                body = text.get_text().strip()
+            items.append(Item(match[2], body, f"https://t.me/{handle}/{match[2]}"))
+        has_older = soup.select_one("a.tme_messages_more[data-before]") is not None
+        return sorted(items, key=lambda item: int(item.id)), has_older
 
     async def resolve(self, handle: str):
-        entity = await self.entity(handle)
-        latest = await self.client.get_messages(entity, limit=1)
-        return str(utils.get_peer_id(entity)), str(latest[0].id) if latest else "0"
+        # Called only when the owner explicitly adds this candidate in the admin panel.
+        handle = normalize_handle("telegram", handle)
+        items, _ = await self.page(handle)
+        return f"public:{handle}", str(max((int(item.id) for item in items), default=0))
 
     async def fetch(self, source):
-        entity = await self.entity(source["handle"])
-        if str(utils.get_peer_id(entity)) != source["external_id"]:
-            raise ValueError("Username сменил владельца. Добавьте источник заново.")
-        items = []
-        cursor = source["cursor"]
-        async for message in self.client.iter_messages(
-            entity, min_id=int(cursor), reverse=True, limit=100
+        handle = normalize_handle("telegram", source["handle"])
+        external_id = source["external_id"]
+        if (
+            external_id != f"public:{handle}"
+            or self.allowed is None
+            or not self.allowed("telegram", handle, external_id)
         ):
-            cursor = str(message.id)
-            if message.raw_text:
-                items.append(
-                    Item(
-                        str(message.id),
-                        message.raw_text,
-                        f"https://t.me/{source['handle']}/{message.id}",
-                    )
+            raise PermissionError("Канал отсутствует в разрешённом списке публичных источников.")
+        cursor = int(source["cursor"])
+        before = None
+        collected = {}
+        for _ in range(50):
+            if not self.allowed("telegram", handle, external_id):
+                raise PermissionError("Источник отключён; чтение остановлено.")
+            items, has_older = await self.page(handle, before)
+            if not items:
+                if before is not None:
+                    raise ValueError("Неполная история; курсор не изменён.")
+                return [], source["cursor"]
+            for item in items:
+                if int(item.id) > cursor:
+                    collected[int(item.id)] = item
+            oldest = min(int(item.id) for item in items)
+            if oldest <= cursor or not has_older:
+                return [collected[k] for k in sorted(collected)], str(
+                    max(collected, default=cursor)
                 )
-        return items, cursor
+            if before is not None and oldest >= before:
+                raise ValueError("Пагинация Telegram не продвигается; курсор не изменён.")
+            before = oldest
+        raise ValueError("Слишком большой пропуск истории; курсор не изменён.")
 
 
 class XSource:
-    def __init__(self, token: str, client: httpx.AsyncClient):
+    def __init__(self, token: str, client: httpx.AsyncClient, allowed=None):
         self.token = token
+        self.allowed = allowed
         self.client = client
 
     async def get(self, path: str, params=None):
@@ -73,6 +129,7 @@ class XSource:
             f"https://api.x.com/2/{path}",
             params=params,
             headers={"Authorization": f"Bearer {self.token}"},
+            follow_redirects=False,
         )
         response.raise_for_status()
         data = response.json()
@@ -81,13 +138,23 @@ class XSource:
         return data
 
     async def resolve(self, handle: str):
+        handle = normalize_handle("x", handle)
         user = await self.get(f"users/by/username/{handle}")
         external_id = user["data"]["id"]
+        if not re.fullmatch(r"[0-9]{1,20}", external_id):
+            raise ValueError("X вернул некорректный идентификатор аккаунта.")
         page = await self.get(f"users/{external_id}/tweets", {"max_results": 5})
         cursor = max((int(p["id"]) for p in page.get("data", [])), default=0)
         return external_id, str(cursor)
 
     async def fetch(self, source):
+        handle = normalize_handle("x", source["handle"])
+        if (
+            self.allowed is None
+            or not self.allowed("x", handle, source["external_id"])
+            or not re.fullmatch(r"[0-9]{1,20}", source["external_id"])
+        ):
+            raise PermissionError("X-аккаунт отсутствует в разрешённом списке источников.")
         params = {
             "max_results": 100,
             "exclude": "retweets,replies",
@@ -98,6 +165,8 @@ class XSource:
         items = []
         cursor = int(source["cursor"])
         for _ in range(100):
+            if not self.allowed("x", handle, source["external_id"]):
+                raise PermissionError("Источник X отключён; чтение остановлено.")
             page = await self.get(f"users/{source['external_id']}/tweets", params)
             for post in page.get("data", []):
                 cursor = max(cursor, int(post["id"]))
