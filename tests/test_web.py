@@ -77,7 +77,7 @@ async def test_edit_shorten_stale_revision_and_delete(client, worker, store):
         "/api/posts/1", json={"text": "Short version.", "version": old["version"]}
     )
     assert response.status_code == 200
-    assert response.json()["draft"] == "Short version.\n\nSource: https://t.me/source/11"
+    assert response.json()["draft"] == "Short version."
     assert response.json()["edited_by_owner"] == 1
     assert (
         await client.patch("/api/posts/1", json={"text": "stale", "version": old["version"]})
@@ -151,7 +151,7 @@ async def test_publish_uses_saved_text_and_blocks_stale_version(client, worker, 
     response = await client.post("/api/posts/1/publish", json={"version": updated["version"]})
     assert response.json()["post"]["state"] == "published"
     sent = [c.args[1] for c in telegram.send.call_args_list if c.args[0] == "-100123"]
-    assert sent == ["Edited English post.\n\nSource: https://t.me/source/11"]
+    assert sent == ["Edited English post."]
     response = await client.post("/api/posts/1/publish", json={"version": updated["version"]})
     assert response.status_code == 409
     assert (

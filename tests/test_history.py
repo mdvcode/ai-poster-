@@ -67,3 +67,29 @@ def test_existing_database_schedules_history_once_for_active_sources(tmp_path, m
     assert db.sources()[0]["history_since"] is None
     assert db.sources()[0]["cursor"] == "20"
     db.close()
+
+
+def test_footer_migration_updates_only_unsent_exact_footers(tmp_path):
+    path = str(tmp_path / "footers.sqlite3")
+    store = Store(path)
+    store.add_source("telegram", "chosen", "public:chosen", "0")
+    for i, label, state in [
+        (1, "Source", "ready"),
+        (2, "Источник", "ready"),
+        (3, "Source", "published"),
+        (4, "Source", "uncertain"),
+    ]:
+        url = f"https://t.me/chosen/{i}"
+        store.ingest(1, [Item(str(i), f"original {i}", url)], str(i), "target")
+        store.update_post(i, draft=f"Post {i}\n\n{label}: {url}", state=state, notified=1)
+    store.db.execute("DELETE FROM settings WHERE key='source_footer_removed'")
+    store.db.commit()
+    store.close()
+    store = Store(path)
+    assert store.post(1)["draft"] == "Post 1"
+    assert store.post(2)["draft"] == "Post 2"
+    assert store.post(1)["notified"] == 0
+    assert store.post(3)["draft"].endswith("Source: https://t.me/chosen/3")
+    assert store.post(4)["draft"].endswith("Source: https://t.me/chosen/4")
+    assert store.post(1)["url"] == "https://t.me/chosen/1"
+    store.close()

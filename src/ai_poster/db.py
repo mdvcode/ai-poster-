@@ -67,6 +67,25 @@ class Store:
             self.db.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (key, value))
         self.db.commit()
 
+        # Remove only our exact legacy footer, without changing already sent/uncertain posts.
+        if self.get("source_footer_removed") != "1":
+            with self.db:
+                rows = self.db.execute(
+                    """SELECT id,draft,url FROM posts WHERE draft IS NOT NULL
+                    AND state NOT IN ('published','sending','uncertain')"""
+                ).fetchall()
+                for row in rows:
+                    body = row["draft"]
+                    for label in ("Source", "Источник"):
+                        body = body.removesuffix(f"\n\n{label}: {row['url']}")
+                    if body != row["draft"]:
+                        self.db.execute(
+                            "UPDATE posts SET draft=?,notified=0 WHERE id=?", (body, row["id"])
+                        )
+                self.db.execute(
+                    "INSERT OR REPLACE INTO settings VALUES ('source_footer_removed','1')"
+                )
+
     def get(self, key: str, default: str = "") -> str:
         row = self.db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return row[0] if row else default
@@ -233,9 +252,9 @@ class Store:
         body = text.strip()
         if not body:
             raise ValueError("Текст не может быть пустым.")
-        draft = f"{body}\n\nSource: {post['url']}"
+        draft = body
         if utf16_len(draft) > 4096:
-            raise ValueError("Текст вместе со ссылкой превышает лимит Telegram: 4096 символов.")
+            raise ValueError("Текст превышает лимит Telegram: 4096 символов.")
         self.update_post(post_id, draft=draft, notified=0, edited_by_owner=1)
 
     def close(self):

@@ -48,11 +48,11 @@ REVIEW = {
 }
 
 
-async def test_rewrite_and_separate_review_add_source(settings):
+async def test_rewrite_and_separate_review_without_source_footer(settings):
     result, requests = await rewrite_with_responses(
         settings, completion(REWRITE), completion(REVIEW)
     )
-    assert result.endswith("Source: https://t.me/source/11")
+    assert result == REWRITE["text"]
     assert len(requests) == 2
     assert requests[0]["response_format"]["json_schema"]["strict"] is True
     assert json.loads(requests[1]["messages"][1]["content"])["candidate"] == REWRITE["text"]
@@ -123,7 +123,7 @@ async def test_claude_rewrite_and_review_use_messages_api(claude_settings):
         result = await Rewriter(claude_settings, client).rewrite(
             "Profit was $10m, possibly more.", "https://t.me/source/11"
         )
-    assert result.endswith("Source: https://t.me/source/11")
+    assert result == REWRITE["text"]
     assert len(requests) == 2
     confidence = requests[1]["output_config"]["format"]["schema"]["properties"]["confidence"]
     assert "minimum" not in confidence and "maximum" not in confidence

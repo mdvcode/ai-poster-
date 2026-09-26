@@ -44,7 +44,5 @@ def worker(store, settings, telegram):
         "11",
     )
     rewriter = AsyncMock()
-    rewriter.rewrite.return_value = (
-        "Компания заработала 10 млн долларов.\n\nИсточник: https://t.me/source/11"
-    )
+    rewriter.rewrite.return_value = "The company earned $10 million."
     return Worker(store, {"telegram": source}, rewriter, telegram, settings)

@@ -197,8 +197,7 @@ class WebAdmin:
     def detail(self, post):
         data = dict(post)
         data["version"] = post_version(post)
-        footer = f"\n\nSource: {post['url']}"
-        data["body"] = (post["draft"] or "").removesuffix(footer)
+        data["body"] = post["draft"] or ""
         return data
 
     async def post(self, request):
