@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ai_poster.dedupe import content_key, near_identical, overlap
 from ai_poster.editorial import FEEDBACK, ContentRules
+from ai_poster.formatting import render_post
 
 
 def post_version(post) -> str:
@@ -285,7 +286,7 @@ class Store:
         if not body:
             raise ValueError("Текст не может быть пустым.")
         draft = body
-        if utf16_len(draft) > 4096:
+        if utf16_len(render_post(draft)[0]) > 4096:
             raise ValueError("Текст превышает лимит Telegram: 4096 символов.")
         self.update_post(post_id, draft=draft, notified=0, edited_by_owner=1)
 
