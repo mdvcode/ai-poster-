@@ -64,7 +64,8 @@ class Store:
             self.db.execute("UPDATE sources SET active=0 WHERE id=?", (source_id,))
             self.db.execute(
                 """UPDATE posts SET state='skipped'
-                WHERE source_id=? AND state IN ('pending','ready','blocked','failed')""",
+                WHERE source_id=?
+                AND state IN ('pending','ready','blocked','failed','send_failed')""",
                 (source_id,),
             )
 
@@ -110,9 +111,12 @@ class Store:
             (state, time.time(), self.get("target"), int(unnotified_only), limit),
         ).fetchall()
 
-    def queue(self):
-        return self.db.execute("""SELECT * FROM posts
-            WHERE state NOT IN ('published','skipped') ORDER BY id DESC LIMIT 20""").fetchall()
+    def queue(self, limit: int = 20, offset: int = 0):
+        return self.db.execute(
+            """SELECT * FROM posts
+            WHERE state NOT IN ('published','skipped') ORDER BY id DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
 
     def counts(self):
         return dict(self.db.execute("SELECT state,COUNT(*) FROM posts GROUP BY state").fetchall())
