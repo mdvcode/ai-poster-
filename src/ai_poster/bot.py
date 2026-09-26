@@ -17,7 +17,7 @@ HELP = """AI Poster — Telegram/X → черновик → ваш канал.
 /sources — источники и ошибки
 /remove ID — отключить источник и его очередь
 /resume — запустить сбор и обработку
-/pause — остановить сбор и публикации
+/pause — остановить сбор и автопубликацию; ручная отправка доступна
 /mode manual — черновики с подтверждением (по умолчанию)
 /mode auto — включить автопубликацию проверенных текстов
 /run — проверить источники сейчас
@@ -126,7 +126,11 @@ class Bot:
                 return "Сначала подключите канал: /channel @my_channel."
             self.store.set("paused", "1" if command == "/pause" else "0")
             self.worker.wakeup.set()
-            return "Пауза включена." if command == "/pause" else "Сбор и обработка включены."
+            return (
+                "Сбор и автопубликация на паузе. Готовые посты можно публиковать вручную."
+                if command == "/pause"
+                else "Сбор и обработка включены."
+            )
         if command == "/mode":
             if args not in (["manual"], ["auto"]):
                 return "Используйте /mode manual или /mode auto."

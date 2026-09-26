@@ -188,8 +188,8 @@ class Worker:
         post = self.store.post(post_id)
         if not post or post["state"] != "ready":
             return "Пост отсутствует, уже обработан или не прошёл проверку смысла."
-        if self.store.get("paused") == "1":
-            return "Публикация на паузе. Сначала /resume."
+        if not manual and self.store.get("paused") == "1":
+            return "Автопубликация на паузе. Сначала /resume."
         if not manual and self.store.get("mode") != "auto":
             return "Включён ручной режим."
         if post["target"] != self.store.get("target"):

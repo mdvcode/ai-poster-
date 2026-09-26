@@ -179,3 +179,21 @@ async def test_security_headers_assets_and_unknown_filters(client):
     assert (await client.get("/assets/app.js")).status_code == 200
     assert (await client.get("/assets/.env")).status_code == 404
     assert (await client.get("/api/posts?filter=invalid")).status_code == 400
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_manual_publish_while_collection_paused(client, worker, store, telegram, mode):
+    await worker.cycle()
+    store.set("mode", mode)
+    await client.post("/api/control", json={"action": "pause"})
+    telegram.send.reset_mock()
+    worker.sources["telegram"].fetch.reset_mock()
+    await worker.cycle()
+    worker.sources["telegram"].fetch.assert_not_called()
+    telegram.send.assert_not_called()
+    post = (await client.get("/api/posts/1")).json()
+    response = await client.post("/api/posts/1/publish", json={"version": post["version"]})
+    assert response.status_code == 200
+    assert response.json()["post"]["state"] == "published"
+    telegram.send.assert_awaited_once_with("-100123", post["draft"])
+    assert store.get("paused") == "1"
