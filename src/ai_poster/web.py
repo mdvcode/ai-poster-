@@ -13,6 +13,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from ai_poster.db import post_version
+from ai_poster.editorial import EXCLUSIONS, FEEDBACK, ContentRules
 from ai_poster.telegram import TelegramError
 
 STATIC = Path(__file__).with_name("static")
@@ -48,6 +49,7 @@ class WebAdmin:
                 Route("/api/login", self.login, methods=["POST"]),
                 Route("/api/logout", self.logout, methods=["POST"]),
                 Route("/api/state", self.state),
+                Route("/api/rules", self.rules, methods=["GET", "PUT"]),
                 Route("/api/posts", self.posts),
                 Route("/api/posts/{post_id:int}", self.post, methods=["GET", "PATCH", "DELETE"]),
                 Route("/api/posts/{post_id:int}/{action}", self.post_action, methods=["POST"]),
@@ -153,6 +155,7 @@ class WebAdmin:
                 "sources": [dict(s) for s in self.store.sources()],
                 "processing_id": self.bot.worker.processing_id,
                 "language": self.bot.settings.output_language,
+                "editorial": self.rules_state(),
             }
         )
 
@@ -165,6 +168,7 @@ class WebAdmin:
             "published": ["published"],
             "deleted": ["deleted", "skipped"],
             "duplicate": ["duplicate"],
+            "filtered": ["filtered"],
             "all": ["pending", "ready", "blocked", "failed", "send_failed", "uncertain"],
         }
         states = groups[group]
@@ -181,7 +185,7 @@ class WebAdmin:
         ).fetchone()[0]
         rows = self.store.db.execute(
             f"""SELECT p.id,p.state,p.draft,p.original,p.reason,p.created,
-                p.edited_by_owner,s.handle,s.kind
+                p.edited_by_owner,p.editorial_score,p.editorial_override,s.handle,s.kind
                 FROM posts p JOIN sources s ON s.id=p.source_id WHERE {where}
                 ORDER BY p.id DESC LIMIT 20 OFFSET ?""",
             (*params, page * 20),
@@ -211,7 +215,7 @@ class WebAdmin:
         async with self.bot.worker.lock:
             try:
                 if request.method == "DELETE":
-                    self.store.delete_post(post_id, data["version"])
+                    self.store.delete_post(post_id, data["version"], data.get("feedback"))
                 else:
                     self.store.edit_post(post_id, data["text"], data["version"])
             except ValueError as exc:
@@ -230,6 +234,16 @@ class WebAdmin:
                 )
             if action == "publish":
                 result = await self.bot.worker.publish(post_id, manual=True)
+            elif action == "choose":
+                try:
+                    self.store.choose_post(post_id, data["version"])
+                except ValueError as exc:
+                    return JSONResponse({"error": str(exc)}, status_code=409)
+                self.bot.worker.wakeup.set()
+                result = (
+                    "Выбран вами. Создадим черновик при включённом сборе "
+                    "в пределах дневного лимита."
+                )
             elif action == "retry" and post["state"] in {"blocked", "failed", "send_failed"}:
                 self.store.update_post(
                     post_id,
@@ -245,6 +259,29 @@ class WebAdmin:
             else:
                 return JSONResponse({"error": "Действие недоступно."}, status_code=409)
         return JSONResponse({"message": result, "post": self.detail(self.store.post(post_id))})
+
+    def rules_state(self):
+        rules = self.store.content_rules()
+        return {
+            "rules": rules.model_dump(),
+            "revision": rules.revision,
+            "drafts_today": self.store.drafts_today(rules),
+            "exclusions": EXCLUSIONS,
+            "feedback": FEEDBACK,
+        }
+
+    async def rules(self, request):
+        if request.method == "PUT":
+            data = await request.json()
+            rules = ContentRules.model_validate(data["rules"])
+            async with self.bot.worker.lock:
+                if data.get("revision") != self.store.content_rules().revision:
+                    return JSONResponse(
+                        {"error": "Правила изменились. Обновите страницу."}, status_code=409
+                    )
+                self.store.save_content_rules(rules)
+                self.bot.worker.wakeup.set()
+        return JSONResponse(self.rules_state())
 
     async def control(self, request):
         action = (await request.json())["action"]

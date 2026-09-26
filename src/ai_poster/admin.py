@@ -11,7 +11,8 @@ from ai_poster.telegram import TelegramError
 PAGE_SIZE = 6
 INPUT_TTL = 15 * 60
 STATES = {
-    "pending": "Ожидает обработки",
+    "pending": "Ожидает отбора / обработки",
+    "filtered": "Отклонён правилами контента",
     "ready": "Готов к публикации",
     "blocked": "Не прошёл проверку смысла",
     "failed": "Ошибка обработки",

@@ -90,21 +90,52 @@ class Worker:
                             "Проверьте /sources и настройки доступа."
                         )
                     self.store.source_error(source["id"], error)
-            for post in self.store.work("pending", self.settings.max_posts_per_cycle):
+            rules = self.store.content_rules()
+            if rules.enabled:
+                if self.store.drafts_today(rules) < rules.daily_limit:
+                    await self.screen_candidates(rules)
+                # Finish scoring the available queue before picking the highest rated posts.
+                waiting = self.store.screening_work(rules.revision, 1)
+                candidates = (
+                    []
+                    if waiting
+                    else self.store.editorial_work(rules, self.settings.max_posts_per_cycle)
+                )
+            else:
+                candidates = self.store.work("pending", self.settings.max_posts_per_cycle)
+            for post in candidates:
+                if self.store.content_rules().revision != rules.revision:
+                    break
+                if rules.enabled and self.store.drafts_today(rules) >= rules.daily_limit:
+                    break
                 if self.store.get("paused") == "1":
                     break
-                if not self.still_pending(post):
+                if not self.still_pending(post, rules):
                     continue
                 self.processing_id = post["id"]
                 try:
-                    exact = self.store.exact_duplicate(post)
-                    candidates = [] if exact else self.store.duplicate_candidates(post)
+                    exact = (
+                        self.store.selected_exact_duplicate(post)
+                        if rules.enabled
+                        else self.store.exact_duplicate(post)
+                    )
+                    candidates = (
+                        []
+                        if exact
+                        else (
+                            self.store.selected_duplicate_candidates(post)
+                            if rules.enabled
+                            else self.store.duplicate_candidates(post)
+                        )
+                    )
                     duplicate_id = exact["id"] if exact else None
                     if candidates:
                         duplicate_id = await self.rewriter.find_duplicate(
-                            post["original"], candidates
+                            post["original"],
+                            candidates,
+                            **({"group_events": True} if rules.enabled else {}),
                         )
-                    if not self.still_pending(post):
+                    if not self.still_pending(post, rules):
                         continue
                     if isinstance(duplicate_id, int):
                         self.store.update_post(
@@ -115,13 +146,13 @@ class Worker:
                         )
                         continue
                     draft = await self.rewriter.rewrite(post["original"], post["url"])
-                    if not self.still_pending(post):
+                    if not self.still_pending(post, rules):
                         continue
-                    self.store.update_post(post["id"], draft=draft, state="ready", reason=None)
+                    self.store.save_draft(post["id"], draft)
                     if self.store.get("paused") != "1" and self.store.get("mode") == "manual":
                         await self.deliver_preview(self.store.post(post["id"]))
                 except QualityError as exc:
-                    if not self.still_pending(post):
+                    if not self.still_pending(post, rules):
                         continue
                     self.store.update_post(post["id"], state="blocked", reason=str(exc)[:1000])
                     await self.notify(
@@ -145,7 +176,7 @@ class Worker:
                         },
                     )
                 except Exception as exc:
-                    if not self.still_pending(post):
+                    if not self.still_pending(post, rules):
                         continue
                     attempts = post["attempts"] + 1
                     self.store.update_post(
@@ -175,12 +206,61 @@ class Worker:
                 elif not post["notified"]:
                     await self.deliver_preview(post)
 
-    def still_pending(self, post):
+    async def screen_candidates(self, rules):
+        for _ in range(5):
+            if (
+                self.store.get("paused") == "1"
+                or self.store.content_rules().revision != rules.revision
+            ):
+                return
+            batch = self.store.screening_work(rules.revision)
+            if not batch:
+                return
+            # Rewrite cannot safely process overlong sources either; do not truncate facts.
+            for post in batch:
+                if len(post["original"]) > 16000:
+                    self.store.update_post(
+                        post["id"], state="blocked", reason="Исходник длиннее 16000 символов."
+                    )
+            batch = [post for post in batch if len(post["original"]) <= 16000]
+            if not batch:
+                continue
+            try:
+                results = await self.rewriter.screen(
+                    [{"id": p["id"], "text": p["original"]} for p in batch],
+                    rules,
+                    self.store.feedback_examples(),
+                )
+                for result in results:
+                    post = next(p for p in batch if p["id"] == result.id)
+                    if (
+                        self.still_pending(post, rules)
+                        and not self.store.post(post["id"])["editorial_override"]
+                    ):
+                        self.store.apply_screening(result, rules)
+            except Exception as exc:
+                for post in batch:
+                    if (
+                        not self.still_pending(post, rules)
+                        or self.store.post(post["id"])["editorial_override"]
+                    ):
+                        continue
+                    attempts = post["attempts"] + 1
+                    self.store.update_post(
+                        post["id"],
+                        attempts=attempts,
+                        state="failed" if attempts >= 3 else "pending",
+                        reason=f"Не удалось оценить материал: {type(exc).__name__}",
+                        next_attempt=time.time() + min(3600, 60 * 2**attempts),
+                    )
+
+    def still_pending(self, post, rules=None):
         current = self.store.post(post["id"])
         return (
             current
             and current["state"] == "pending"
             and current["target"] == self.store.get("target")
+            and (rules is None or self.store.content_rules().revision == rules.revision)
         )
 
     async def publish(self, post_id: int, *, manual: bool):
