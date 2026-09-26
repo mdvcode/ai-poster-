@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
+from ai_poster.ai import QualityError
 from ai_poster.db import post_version
 from ai_poster.editorial import EXCLUSIONS, FEEDBACK, ContentRules
 from ai_poster.telegram import TelegramError
@@ -226,6 +227,8 @@ class WebAdmin:
         post_id = request.path_params["post_id"]
         action = request.path_params["action"]
         data = await request.json()
+        if action == "style":
+            return await self.style_post(post_id, data)
         async with self.bot.worker.lock:
             post = self.store.post(post_id)
             if not post or post_version(post) != data.get("version"):
@@ -259,6 +262,26 @@ class WebAdmin:
             else:
                 return JSONResponse({"error": "Действие недоступно."}, status_code=409)
         return JSONResponse({"message": result, "post": self.detail(self.store.post(post_id))})
+
+    async def style_post(self, post_id, data):
+        post = self.store.post(post_id)
+        if not post or post["state"] != "ready" or post_version(post) != data.get("version"):
+            return JSONResponse({"error": "Черновик изменился или недоступен."}, status_code=409)
+        try:
+            styled = await self.bot.worker.rewriter.restyle(post["draft"])
+        except QualityError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        async with self.bot.worker.lock:
+            try:
+                self.store.edit_post(post_id, styled, data["version"])
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+        return JSONResponse(
+            {
+                "message": "Пост оформлен. Проверьте предпросмотр.",
+                "post": self.detail(self.store.post(post_id)),
+            }
+        )
 
     def rules_state(self):
         rules = self.store.content_rules()

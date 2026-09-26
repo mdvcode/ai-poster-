@@ -4,6 +4,7 @@ import logging
 import time
 
 from ai_poster.ai import QualityError
+from ai_poster.formatting import post_kwargs
 from ai_poster.telegram import TelegramError
 
 log = logging.getLogger(__name__)
@@ -35,9 +36,11 @@ class Worker:
 
     async def preview(self, post):
         revision = draft_revision(post["draft"])
+        text, formatting = post_kwargs(post["draft"])
         await self.telegram.send(
             self.settings.owner_id,
-            post["draft"],
+            text,
+            **formatting,
             reply_markup={
                 "inline_keyboard": [
                     [
@@ -288,7 +291,8 @@ class Worker:
             return "Действует интервал публикации. Повторите позже."
         self.store.update_post(post_id, state="sending")
         try:
-            result = await self.telegram.send(post["target"], post["draft"])
+            text, formatting = post_kwargs(post["draft"])
+            result = await self.telegram.send(post["target"], text, **formatting)
             message_id = int(result["message_id"])
         except TelegramError as exc:
             if exc.code == 429:
