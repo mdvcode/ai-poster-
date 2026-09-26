@@ -22,6 +22,7 @@ def settings():
 @pytest.fixture
 def store(tmp_path):
     db = Store(str(tmp_path / "test.sqlite3"))
+    db.set("content_rules", '{"enabled":false}')
     db.set("target", "-100123")
     db.set("paused", "0")
     db.add_source("telegram", "source", "-100456", "10")
