@@ -9,7 +9,6 @@ from pathlib import Path
 
 import httpx
 from pydantic import ValidationError
-from telethon import TelegramClient
 
 from ai_poster.ai import Rewriter
 from ai_poster.bot import Bot
@@ -37,40 +36,10 @@ def single_instance(path: str):
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def reader_client(settings):
-    if not settings.telegram_api_id or not settings.telegram_api_hash.get_secret_value():
-        return None
-    Path(settings.telegram_session_path).parent.mkdir(parents=True, exist_ok=True)
-    return TelegramClient(
-        settings.telegram_session_path,
-        settings.telegram_api_id,
-        settings.telegram_api_hash.get_secret_value(),
-        flood_sleep_threshold=0,
-    )
-
-
-async def login(settings):
-    reader = reader_client(settings)
-    if reader is None:
-        raise RuntimeError("Заполните TELEGRAM_API_ID и TELEGRAM_API_HASH в .env.")
-    try:
-        await reader.start()
-        print("Telegram reader авторизован. Сессия сохранена локально.")
-    finally:
-        await reader.disconnect()
-
-
 async def serve(settings):
     store = Store(settings.database_path)
-    reader = reader_client(settings)
     tasks = []
     try:
-        if reader:
-            await reader.connect()
-            if not await reader.is_user_authorized():
-                await reader.disconnect()
-                reader = None
-                log.warning("Telegram reader disabled: run ai-poster login first")
         async with httpx.AsyncClient(timeout=30) as client:
             telegram = Telegram(settings.telegram_bot_token.get_secret_value(), client)
             await telegram.call("getMe")
@@ -93,8 +62,10 @@ async def serve(settings):
             worker = Worker(
                 store,
                 {
-                    "telegram": TelegramSource(reader),
-                    "x": XSource(settings.x_bearer_token.get_secret_value(), client),
+                    "telegram": TelegramSource(client, store.source_is_active),
+                    "x": XSource(
+                        settings.x_bearer_token.get_secret_value(), client, store.source_is_active
+                    ),
                 },
                 Rewriter(settings, client),
                 telegram,
@@ -122,15 +93,13 @@ async def serve(settings):
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
     finally:
-        if reader:
-            await reader.disconnect()
         store.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description="AI content poster for Telegram")
-    parser.add_argument("command", choices=["run", "login"], nargs="?", default="run")
-    args = parser.parse_args()
+    parser.add_argument("command", choices=["run"], nargs="?", default="run")
+    parser.parse_args()
     os.umask(0o077)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -138,11 +107,10 @@ def main():
     # HTTP request logging would expose the Telegram token in request URLs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("telethon").setLevel(logging.WARNING)
     try:
         settings = Settings()
         with single_instance(settings.database_path):
-            asyncio.run(login(settings) if args.command == "login" else serve(settings))
+            asyncio.run(serve(settings))
     except ValidationError as exc:
         parser.exit(2, f"Ошибка конфигурации .env:\n{exc}\n")
     except RuntimeError as exc:

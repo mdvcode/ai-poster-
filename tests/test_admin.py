@@ -211,3 +211,19 @@ async def test_remove_cancels_failed_sends(bot, store):
     store.update_post(1, state="send_failed")
     await press(bot, "remove_confirm:1")
     assert store.post(1)["state"] == "skipped"
+
+
+async def test_destination_public_username_cannot_be_source(bot, telegram, store):
+    telegram.call.return_value = {"username": "destination"}
+    await press(bot, "add:telegram")
+    await message(bot, "@destination")
+    bot.worker.sources["telegram"].resolve.assert_not_awaited()
+    assert len(store.sources()) == 1
+
+
+async def test_source_cannot_become_destination_by_numeric_id(bot, telegram, store):
+    telegram.validate_channel.return_value = "-100999"
+    telegram.call.return_value = {"username": "source"}
+    await press(bot, "channel")
+    await message(bot, "-100999")
+    assert store.get("target") == "-100123"

@@ -7,7 +7,11 @@ name = "ai-poster"
 version = "0.1.0"
 description = "Telegram-controlled content curation from Telegram and X"
 requires-python = ">=3.12"
-dependencies = ["httpx>=0.28,<0.29", "pydantic-settings>=2.10,<3", "telethon>=1.42,<2"]
+dependencies = [
+    "beautifulsoup4>=4.13,<5",
+    "httpx>=0.28,<0.29",
+    "pydantic-settings>=2.10,<3",
+]
 
 [project.scripts]
 ai-poster = "ai_poster.main:main"

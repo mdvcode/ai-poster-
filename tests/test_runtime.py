@@ -15,7 +15,7 @@ def test_single_instance_lock_releases_after_exit(tmp_path):
         pass
 
 
-def test_empty_optional_reader_config_does_not_prevent_x_only_setup():
+def test_legacy_personal_credentials_are_not_loaded():
     settings = Settings(
         _env_file=None,
         telegram_bot_token="token",
@@ -23,7 +23,8 @@ def test_empty_optional_reader_config_does_not_prevent_x_only_setup():
         openai_api_key="key",
         telegram_api_id="",
     )
-    assert settings.telegram_api_id is None
+    assert not hasattr(settings, "telegram_api_id")
+    assert not hasattr(settings, "telegram_session_path")
 
 
 def test_required_credentials_are_not_empty():
