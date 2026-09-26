@@ -1,0 +1,12 @@
+services:
+  poster:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/poster.sqlite3
+    volumes:
+      - poster-data:/app/data
+    restart: unless-stopped
+    stop_grace_period: 20s
+volumes:
+  poster-data:
