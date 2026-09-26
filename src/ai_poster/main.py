@@ -16,6 +16,7 @@ from ai_poster.config import Settings
 from ai_poster.db import Store
 from ai_poster.sources import TelegramSource, XSource
 from ai_poster.telegram import Telegram
+from ai_poster.web import WebAdmin
 from ai_poster.worker import Worker
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ async def serve(settings):
                         {"command": "start", "description": "Начать работу"},
                         {"command": "pause", "description": "Остановить сбор и публикации"},
                         {"command": "help", "description": "Все команды"},
+                        {"command": "web", "description": "Вход в веб-админку"},
                     ],
                     scope={"type": "chat", "chat_id": settings.owner_id},
                 )
@@ -84,6 +86,8 @@ async def serve(settings):
                 asyncio.create_task(worker.run()),
                 asyncio.create_task(stop.wait()),
             ]
+            if settings.web_enabled:
+                tasks.append(asyncio.create_task(WebAdmin(bot).run()))
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:

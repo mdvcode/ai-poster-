@@ -90,6 +90,7 @@ class Admin:
                     )
                 ],
                 [button("🔄 Проверить сейчас", "run"), button("ℹ️ Как пользоваться", "help")],
+                [button("🌐 Веб-админка", "web")],
             ],
             message_id,
         )
@@ -238,6 +239,8 @@ class Admin:
         self.clear_input()
         if action == "home":
             await self.home(message_id)
+        elif action == "web":
+            await self.bot.reply(await self.bot.command("/web", []))
         elif action in {"sources", "queue"} and arg.isdigit():
             await getattr(self, action)(int(arg), message_id)
         elif action == "add" and arg in {"telegram", "x"}:

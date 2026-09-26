@@ -3,6 +3,12 @@ import sqlite3
 import time
 from pathlib import Path
 
+from ai_poster.dedupe import content_key, near_identical, overlap
+
+
+def post_version(post) -> str:
+    return hashlib.sha256(f"{post['state']}\0{post['draft'] or ''}".encode()).hexdigest()[:24]
+
 
 class Store:
     """Small synchronous transactions; network/AI work must stay outside transactions."""
@@ -39,6 +45,21 @@ class Store:
                 self.db.execute(
                     "UPDATE sources SET history_since=? WHERE active=1", (time.time() - 72 * 3600,)
                 )
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(posts)")}
+        with self.db:
+            for column, definition in (
+                ("content_key", "TEXT"),
+                ("duplicate_of", "INTEGER"),
+                ("edited_by_owner", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in columns:
+                    self.db.execute(f"ALTER TABLE posts ADD COLUMN {column} {definition}")
+            for row in self.db.execute("SELECT id,original FROM posts WHERE content_key IS NULL"):
+                self.db.execute(
+                    "UPDATE posts SET content_key=? WHERE id=?",
+                    (content_key(row["original"]), row["id"]),
+                )
+            self.db.execute("CREATE INDEX IF NOT EXISTS posts_content ON posts(target,content_key)")
         # A crash after sending but before recording success cannot be safely retried.
         with self.db:
             self.db.execute("UPDATE posts SET state='uncertain' WHERE state='sending'")
@@ -100,9 +121,18 @@ class Store:
                 digest = hashlib.sha256(" ".join(item.text.split()).encode()).hexdigest()
                 self.db.execute(
                     """INSERT OR IGNORE INTO posts
-                    (source_id, external_id, original, url, target, digest, created)
-                    VALUES (?,?,?,?,?,?,?)""",
-                    (source_id, item.id, item.text, item.url, target, digest, time.time()),
+                    (source_id, external_id, original, url, target, digest, created,content_key)
+                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        source_id,
+                        item.id,
+                        item.text,
+                        item.url,
+                        target,
+                        digest,
+                        time.time(),
+                        content_key(item.text),
+                    ),
                 )
             self.db.execute(
                 "UPDATE sources SET cursor=?,error=NULL,history_since=NULL WHERE id=?",
@@ -113,7 +143,17 @@ class Store:
         return self.db.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
 
     def update_post(self, post_id: int, **fields):
-        allowed = {"draft", "state", "reason", "attempts", "next_attempt", "notified", "message_id"}
+        allowed = {
+            "draft",
+            "state",
+            "reason",
+            "attempts",
+            "next_attempt",
+            "notified",
+            "message_id",
+            "duplicate_of",
+            "edited_by_owner",
+        }
         if not fields or not fields.keys() <= allowed:
             raise ValueError("Invalid post fields")
         with self.db:
@@ -134,12 +174,69 @@ class Store:
     def queue(self, limit: int = 20, offset: int = 0):
         return self.db.execute(
             """SELECT * FROM posts
-            WHERE state NOT IN ('published','skipped') ORDER BY id DESC LIMIT ? OFFSET ?""",
+            WHERE state NOT IN ('published','skipped','deleted','duplicate')
+            ORDER BY id DESC LIMIT ? OFFSET ?""",
             (limit, offset),
         ).fetchall()
 
     def counts(self):
         return dict(self.db.execute("SELECT state,COUNT(*) FROM posts GROUP BY state").fetchall())
+
+    def exact_duplicate(self, post):
+        return self.db.execute(
+            "SELECT id FROM posts WHERE target=? AND content_key=? AND id<? ORDER BY id LIMIT 1",
+            (post["target"], content_key(post["original"]), post["id"]),
+        ).fetchone()
+
+    def duplicate_candidates(self, post):
+        rows = self.db.execute(
+            """SELECT id,original FROM posts WHERE target=? AND id<? AND created>=?
+            AND state!='duplicate' ORDER BY id DESC LIMIT 200""",
+            (post["target"], post["id"], time.time() - 14 * 86400),
+        ).fetchall()
+        ranked = sorted(
+            ((overlap(post["original"], r["original"]), dict(r)) for r in rows),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        return [r for score, r in ranked[:5] if score >= 0.1]
+
+    def published_duplicate(self, post):
+        rows = self.db.execute(
+            """SELECT * FROM posts WHERE target=? AND id!=?
+            AND state IN ('published','sending','uncertain')""",
+            (post["target"], post["id"]),
+        ).fetchall()
+        for previous in rows:
+            if near_identical(post["draft"] or "", previous["draft"] or "") or near_identical(
+                post["original"], previous["original"]
+            ):
+                return previous["id"]
+        return None
+
+    def delete_post(self, post_id: int, version: str):
+        post = self.post(post_id)
+        if not post or post_version(post) != version:
+            raise ValueError("Пост изменился. Обновите страницу.")
+        if post["state"] in {"published", "sending", "uncertain"}:
+            raise ValueError(
+                "Пост уже отправлен или отправляется; удалить его из черновиков нельзя."
+            )
+        self.update_post(post_id, state="deleted")
+
+    def edit_post(self, post_id: int, text: str, version: str):
+        from ai_poster.telegram import utf16_len
+
+        post = self.post(post_id)
+        if not post or post_version(post) != version or post["state"] != "ready":
+            raise ValueError("Черновик изменился или ещё не готов. Обновите страницу.")
+        body = text.strip()
+        if not body:
+            raise ValueError("Текст не может быть пустым.")
+        draft = f"{body}\n\nSource: {post['url']}"
+        if utf16_len(draft) > 4096:
+            raise ValueError("Текст вместе со ссылкой превышает лимит Telegram: 4096 символов.")
+        self.update_post(post_id, draft=draft, notified=0, edited_by_owner=1)
 
     def close(self):
         self.db.close()

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     publish_interval_seconds: int = Field(default=60, ge=1)
     max_posts_per_cycle: int = Field(default=5, ge=1, le=50)
     output_language: str = "English"
+    web_enabled: bool = True
+    web_port: int = Field(default=8765, ge=1024, le=65535)
 
     @field_validator("telegram_bot_token")
     @classmethod
