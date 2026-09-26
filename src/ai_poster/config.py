@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     poll_interval_seconds: int = Field(default=300, ge=30)
     publish_interval_seconds: int = Field(default=60, ge=1)
     max_posts_per_cycle: int = Field(default=5, ge=1, le=50)
-    output_language: str = "Russian"
+    output_language: str = "English"
 
     @field_validator("telegram_bot_token")
     @classmethod
