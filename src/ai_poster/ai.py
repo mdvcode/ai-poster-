@@ -169,7 +169,7 @@ class Rewriter:
         if not result.standalone or not result.text.strip():
             raise QualityError(result.reason or "Недостаточно контекста.")
         candidate = result.text.strip()
-        final = f"{candidate}\n\nИсточник: {url}"
+        final = f"{candidate}\n\nSource: {url}"
         if utf16_len(final) > 4096:
             raise QualityError("Текст превышает лимит Telegram; сокращение может потерять смысл.")
         review = await self.structured(
