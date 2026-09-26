@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 HELP = """AI Poster — Telegram/X → черновик → ваш канал.
 
 /admin — админка с кнопками
+/web — код входа в веб-админку на этом Mac
 /channel @my_channel — подключить канал (бот и вы — администраторы)
 /add telegram @source — добавить Telegram-канал
 /add x @account — добавить X-аккаунт
@@ -101,6 +102,17 @@ class Bot:
             await self.reply(result)
 
     async def command(self, command: str, args: list[str]):
+        if command == "/web":
+            from ai_poster.web import issue_login_code
+
+            if not self.settings.web_enabled:
+                return "Веб-админка отключена."
+            code = issue_login_code(self.store)
+            return (
+                f"Админка: http://127.0.0.1:{self.settings.web_port}\n\n"
+                f"Код входа: {code}\nДействует 10 минут, только один раз. "
+                "Открывайте сайт на Mac, где запущен бот."
+            )
         if command in {"/start", "/help"}:
             return HELP
         if command == "/status":
