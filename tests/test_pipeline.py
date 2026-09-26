@@ -238,3 +238,51 @@ async def test_unapproved_old_drafts_do_not_starve_new_notifications(worker, sto
     assert store.counts() == {"ready": 12}
     assert len(telegram.send.call_args_list) == 12
     assert not store.work("ready", 50, unnotified_only=True)
+
+
+async def test_ready_draft_is_delivered_before_next_rewrite(worker, store, telegram):
+    worker.sources["telegram"].fetch.return_value = (
+        [Item("11", "First text", "url1"), Item("12", "Second text", "url2")],
+        "12",
+    )
+    calls = 0
+
+    async def rewrite(text, url):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            assert store.post(1)["notified"] == 1
+            assert telegram.send.await_count == 1
+        return text
+
+    worker.rewriter.rewrite.side_effect = rewrite
+    await worker.cycle()
+    assert telegram.send.await_count == 2
+    assert store.post(2)["notified"] == 1
+
+
+async def test_blocked_notification_has_reason_and_owner_only_details(
+    worker, store, telegram, settings
+):
+    worker.rewriter.rewrite.side_effect = QualityError("Отсутствует видео")
+    await worker.cycle()
+    notice = telegram.send.call_args
+    assert "Отсутствует видео" in notice.args[1]
+    action = notice.kwargs["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+    assert action == "admin:show:1"
+    bot = Bot(store, worker, telegram, settings)
+    telegram.send.reset_mock()
+    callback = {
+        "callback_query": {
+            "id": "cb",
+            "from": {"id": 9},
+            "data": action,
+            "message": {"chat": {"id": 9, "type": "private"}},
+        }
+    }
+    await bot.handle(callback)
+    telegram.send.assert_not_called()
+    callback["callback_query"]["from"]["id"] = 42
+    callback["callback_query"]["message"]["chat"]["id"] = 42
+    await bot.handle(callback)
+    assert any("Отсутствует видео" in c.args[1] for c in telegram.send.call_args_list)

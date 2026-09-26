@@ -53,6 +53,13 @@ class Worker:
             },
         )
 
+    async def deliver_preview(self, post):
+        try:
+            await self.preview(post)
+            self.store.update_post(post["id"], notified=1)
+        except Exception as exc:
+            log.warning("Draft notification failed: %s", type(exc).__name__)
+
     async def cycle(self):
         async with self.lock:
             if self.store.get("paused") == "1" or not self.store.get("target"):
@@ -78,10 +85,29 @@ class Worker:
                 try:
                     draft = await self.rewriter.rewrite(post["original"], post["url"])
                     self.store.update_post(post["id"], draft=draft, state="ready", reason=None)
+                    if self.store.get("paused") != "1" and self.store.get("mode") == "manual":
+                        await self.deliver_preview(self.store.post(post["id"]))
                 except QualityError as exc:
                     self.store.update_post(post["id"], state="blocked", reason=str(exc)[:1000])
                     await self.notify(
-                        f"Пост #{post['id']} не прошёл проверку смысла. /show {post['id']}"
+                        f"Пост #{post['id']} не прошёл проверку смысла.\n\n"
+                        f"Причина: {str(exc)[:700]}",
+                        reply_markup={
+                            "inline_keyboard": [
+                                [
+                                    {
+                                        "text": "Подробнее",
+                                        "callback_data": f"admin:show:{post['id']}",
+                                    }
+                                ],
+                                [
+                                    {
+                                        "text": "Оригинал",
+                                        "callback_data": f"admin:original:{post['id']}",
+                                    }
+                                ],
+                            ]
+                        },
                     )
                 except Exception as exc:
                     attempts = post["attempts"] + 1
@@ -107,11 +133,7 @@ class Worker:
                 if self.store.get("mode") == "auto":
                     await self.publish(post["id"], manual=False)
                 elif not post["notified"]:
-                    try:
-                        await self.preview(post)
-                        self.store.update_post(post["id"], notified=1)
-                    except Exception as exc:
-                        log.warning("Draft notification failed: %s", type(exc).__name__)
+                    await self.deliver_preview(post)
 
     async def publish(self, post_id: int, *, manual: bool):
         """Caller holds lock; state is committed BEFORE the non-idempotent send."""
