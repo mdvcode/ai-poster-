@@ -83,3 +83,90 @@ async def test_review_rejects_changed_meaning(settings, changes):
 async def test_fail_closed_on_incomplete_or_oversized_output(settings, response):
     with pytest.raises(QualityError):
         await rewrite_with_responses(settings, response)
+
+
+def claude_completion(content, reason="end_turn"):
+    return {"stop_reason": reason, "content": [{"type": "text", "text": json.dumps(content)}]}
+
+
+@pytest.fixture
+def claude_settings(settings):
+    return type(settings)(
+        _env_file=None,
+        telegram_bot_token="fake-token",
+        owner_id=42,
+        ai_provider="anthropic",
+        anthropic_api_key="fake-claude-key",
+    )
+
+
+async def test_claude_rewrite_and_review_use_messages_api(claude_settings):
+    responses = [claude_completion(REWRITE), claude_completion(REVIEW)]
+    requests = []
+
+    def handler(request):
+        assert str(request.url) == "https://api.anthropic.com/v1/messages"
+        assert request.headers["x-api-key"] == "fake-claude-key"
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        assert "authorization" not in request.headers
+        body = json.loads(request.content)
+        requests.append(body)
+        assert body["model"] == "claude-sonnet-4-6"
+        assert body["system"]
+        assert body["messages"][0]["role"] == "user"
+        assert body["output_config"]["format"]["type"] == "json_schema"
+        return httpx.Response(200, json=responses.pop(0))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await Rewriter(claude_settings, client).rewrite(
+            "Profit was $10m, possibly more.", "https://t.me/source/11"
+        )
+    assert result.endswith("Источник: https://t.me/source/11")
+    assert len(requests) == 2
+    confidence = requests[1]["output_config"]["format"]["schema"]["properties"]["confidence"]
+    assert "minimum" not in confidence and "maximum" not in confidence
+    assert "minimum=0" in confidence["description"]
+    assert json.loads(requests[1]["messages"][0]["content"])["candidate"] == REWRITE["text"]
+
+
+@pytest.mark.parametrize("reason", ["refusal", "max_tokens", "tool_use", "pause_turn"])
+async def test_claude_incomplete_response_blocks_post(claude_settings, reason):
+    with pytest.raises(QualityError):
+        await rewrite_with_responses(claude_settings, claude_completion(REWRITE, reason))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"faithful": False},
+        {"confidence": 0.5},
+        {"missing_facts": ["possibly"]},
+        {"added_claims": ["record profit"]},
+        {"changed_facts": ["10m became 20m"]},
+    ],
+)
+async def test_claude_review_blocks_changed_meaning(claude_settings, changes):
+    with pytest.raises(QualityError):
+        await rewrite_with_responses(
+            claude_settings, claude_completion(REWRITE), claude_completion(REVIEW | changes)
+        )
+
+
+@pytest.mark.parametrize("confidence", [-0.1, 1.1])
+async def test_claude_numeric_bounds_are_validated_locally(claude_settings, confidence):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        await rewrite_with_responses(
+            claude_settings,
+            claude_completion(REWRITE),
+            claude_completion(REVIEW | {"confidence": confidence}),
+        )
+
+
+@pytest.mark.parametrize("content", [[], [{"type": "tool_use", "name": "unexpected"}]])
+async def test_claude_missing_or_unexpected_content_blocks(claude_settings, content):
+    with pytest.raises(QualityError):
+        await rewrite_with_responses(
+            claude_settings, {"stop_reason": "end_turn", "content": content}
+        )

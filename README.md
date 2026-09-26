@@ -23,7 +23,7 @@ AI-проверка может ошибаться: ручной просмотр
 
 - Python 3.12+ и [uv](https://docs.astral.sh/uv/getting-started/installation/).
 - Telegram-бот, созданный через [BotFather](https://t.me/BotFather), и ваш числовой Telegram user ID.
-- OpenAI API key с доступом к модели, поддерживающей Structured Outputs.
+- Anthropic API key для Claude (или OpenAI API key, если выбран OpenAI).
 - Для Telegram-источников: `api_id` и `api_hash` с [my.telegram.org](https://my.telegram.org),
   а также пользовательский Telegram-аккаунт с доступом к источникам.
 - Для X: Bearer Token приложения с доступом к чтению user timeline через официальный API.
@@ -43,11 +43,27 @@ uv run ai-poster login  # Только для чтения Telegram-источн
 uv run ai-poster run
 ```
 
-Обязательные переменные: `TELEGRAM_BOT_TOKEN`, `OWNER_ID`, `OPENAI_API_KEY`.
+Обязательные переменные: `TELEGRAM_BOT_TOKEN`, `OWNER_ID` и ключ выбранного AI-провайдера.
+Пример `.env.example` настроен на Claude:
+
+```dotenv
+AI_PROVIDER=anthropic
+ANTHROPIC_API_KEY=ваш_ключ
+ANTHROPIC_MODEL=claude-sonnet-4-6
+VERIFY_MODEL=
+```
+
+Для OpenAI укажите `AI_PROVIDER=openai` и `OPENAI_API_KEY`.
+Ключ другого провайдера не нужен; автоматического переключения между провайдерами нет.
+Если `AI_PROVIDER` не задан, для совместимости со старой конфигурацией используется OpenAI.
 Для Telegram reader нужны также `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` и выполненный `login`.
 Для X нужен `X_BEARER_TOKEN`. Пример содержит все остальные настройки.
 
-Начальная модель — `gpt-4.1-mini`; `OPENAI_MODEL` и `VERIFY_MODEL` можно задавать отдельно.
+Модель Claude задаётся `ANTHROPIC_MODEL` (по умолчанию `claude-sonnet-4-6`),
+модель OpenAI — `OPENAI_MODEL` (по умолчанию `gpt-4.1-mini`).
+Пустой `VERIFY_MODEL` использует ту же модель для независимой проверки; можно указать
+другую модель выбранного провайдера. При смене провайдера очищайте прежний `VERIFY_MODEL`.
+Для обоих провайдеров используются структурированные JSON-ответы с локальной валидацией.
 Язык результата задаётся `OUTPUT_LANGUAGE` (по умолчанию русский).
 `POLL_INTERVAL_SECONDS` — период опроса, `MAX_POSTS_PER_CYCLE` — максимум обрабатываемых
 текстов за цикл, `PUBLISH_INTERVAL_SECONDS` — минимальный интервал между публикациями.
@@ -121,7 +137,7 @@ uv run ai-poster run
   несколько реплик и одновременный webhook не поддерживаются.
 - Секреты, SQLite и сессии исключены из Git и Docker build context. Не публикуйте файл
   Telegram-сессии: он даёт доступ к вашему аккаунту. Содержимое исходных постов передаётся
-  в OpenAI для обработки; остальные ключи туда не передаются.
+  выбранному AI-провайдеру (Anthropic или OpenAI) для обработки; остальные ключи туда не передаются.
 
 ## Границы первой версии
 
@@ -170,4 +186,5 @@ uv build
 [Telethon](https://docs.telethon.dev/en/stable/modules/client.html),
 [X user timeline](https://docs.x.com/x-api/users/get-posts),
 [официальный пример X с `note_tweet`](https://github.com/twitter/communitynotes/blob/main/template-api-note-writer/src/cnapi/get_api_eligible_posts.py),
-[OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+[OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs),
+[Claude Structured Outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs).
