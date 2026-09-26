@@ -227,3 +227,16 @@ async def test_source_cannot_become_destination_by_numeric_id(bot, telegram, sto
     await press(bot, "channel")
     await message(bot, "-100999")
     assert store.get("target") == "-100123"
+
+
+@pytest.mark.parametrize("command", ["/show", "/original"])
+async def test_bare_post_command_opens_queue_buttons(bot, worker, telegram, command):
+    await worker.cycle()
+    telegram.send.reset_mock()
+    await message(bot, command)
+    panel = telegram.send.call_args
+    assert "Черновики и обработка" in panel.args[1]
+    actions = {
+        b["callback_data"] for row in panel.kwargs["reply_markup"]["inline_keyboard"] for b in row
+    }
+    assert "admin:show:1" in actions

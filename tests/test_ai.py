@@ -170,3 +170,12 @@ async def test_claude_missing_or_unexpected_content_blocks(claude_settings, cont
         await rewrite_with_responses(
             claude_settings, {"stop_reason": "end_turn", "content": content}
         )
+
+
+async def test_block_reason_reports_concrete_difference_despite_positive_summary(settings):
+    with pytest.raises(QualityError, match="Добавлено от себя: рублей"):
+        await rewrite_with_responses(
+            settings,
+            completion(REWRITE),
+            completion(REVIEW | {"added_claims": ["рублей"], "reason": "В целом всё верно"}),
+        )

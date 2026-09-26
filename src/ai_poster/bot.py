@@ -140,6 +140,11 @@ class Bot:
                 or "Очередь пуста."
             )
         if command in {"/show", "/original"}:
+            if not args:
+                await self.admin.queue()
+                return None
+            if len(args) != 1 or not args[0].isdigit():
+                return f"Укажите номер поста, например: {command} 1. Или откройте /queue."
             post = self.store.post(int(args[0]))
             if not post:
                 return "Пост не найден."
