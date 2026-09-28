@@ -5,13 +5,14 @@ import time
 
 from ai_poster.ai import QualityError
 from ai_poster.formatting import post_kwargs
-from ai_poster.telegram import TelegramError
+from ai_poster.telegram import TelegramError, utf16_len
 
 log = logging.getLogger(__name__)
 
 
-def draft_revision(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()[:12]
+def draft_revision(text: str, image_id=None) -> str:
+    body = text + ("\0" + image_id if image_id else "")
+    return hashlib.sha256(body.encode()).hexdigest()[:12]
 
 
 class Worker:
@@ -35,8 +36,16 @@ class Worker:
             return False
 
     async def preview(self, post):
-        revision = draft_revision(post["draft"])
+        revision = draft_revision(post["draft"], post["image_id"])
         text, formatting = post_kwargs(post["draft"])
+        if post["image_id"]:
+            image = self.store.image(post["image_id"])
+            if image:
+                await self.telegram.send_photo(
+                    self.settings.owner_id,
+                    image["content"],
+                    caption="AI illustration · предпросмотр обложки",
+                )
         await self.telegram.send(
             self.settings.owner_id,
             text,
@@ -60,12 +69,22 @@ class Worker:
 
     async def deliver_preview(self, post):
         current = self.store.post(post["id"])
-        if not current or current["state"] != "ready" or current["draft"] != post["draft"]:
+        if (
+            not current
+            or current["state"] != "ready"
+            or current["draft"] != post["draft"]
+            or current["image_id"] != post["image_id"]
+        ):
             return
         try:
             await self.preview(post)
             current = self.store.post(post["id"])
-            if current and current["state"] == "ready" and current["draft"] == post["draft"]:
+            if (
+                current
+                and current["state"] == "ready"
+                and current["draft"] == post["draft"]
+                and current["image_id"] == post["image_id"]
+            ):
                 self.store.update_post(post["id"], notified=1)
         except Exception as exc:
             log.warning("Draft notification failed: %s", type(exc).__name__)
@@ -271,6 +290,10 @@ class Worker:
         post = self.store.post(post_id)
         if not post or post["state"] != "ready":
             return "Пост отсутствует, уже обработан или не прошёл проверку смысла."
+        if self.store.image_busy(post_id):
+            return "Дождитесь генерации картинки и проверьте результат."
+        if not manual and post["image_candidate"]:
+            return "Выберите обложку или подтвердите публикацию без картинки."
         if not manual and self.store.get("paused") == "1":
             return "Автопубликация на паузе. Сначала /resume."
         if not manual and self.store.get("mode") != "auto":
@@ -292,7 +315,28 @@ class Worker:
         self.store.update_post(post_id, state="sending")
         try:
             text, formatting = post_kwargs(post["draft"])
-            result = await self.telegram.send(post["target"], text, **formatting)
+            if post["image_id"] and not post["image_message_id"]:
+                image = self.store.image(post["image_id"])
+                if not image:
+                    raise ValueError("Image missing")
+                if utf16_len(text) <= 1024:
+                    photo_options = (
+                        {"caption_entities": formatting["entities"]} if formatting else {}
+                    )
+                    result = await self.telegram.send_photo(
+                        post["target"], image["content"], caption=text, **photo_options
+                    )
+                else:
+                    photo = await self.telegram.send_photo(
+                        post["target"],
+                        image["content"],
+                        caption="AI illustration",
+                        disable_notification=True,
+                    )
+                    self.store.update_post(post_id, image_message_id=int(photo["message_id"]))
+                    result = await self.telegram.send(post["target"], text, **formatting)
+            else:
+                result = await self.telegram.send(post["target"], text, **formatting)
             message_id = int(result["message_id"])
         except TelegramError as exc:
             if exc.code == 429:
@@ -301,7 +345,11 @@ class Worker:
                 self.store.set("next_send", str(retry_at))
                 return "Telegram ограничил частоту. Повторите позже."
             # 5xx may occur after Telegram accepted the request.
-            state = "uncertain" if exc.code >= 500 else "send_failed"
+            state = (
+                "uncertain"
+                if (exc.code >= 500 or self.store.post(post_id)["image_message_id"])
+                else "send_failed"
+            )
             self.store.update_post(post_id, state=state, reason=str(exc))
         except Exception as exc:
             self.store.update_post(post_id, state="uncertain", reason=type(exc).__name__)

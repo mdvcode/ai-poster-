@@ -1,325 +1,125 @@
-# AI Poster
+<div align="center">
 
-Telegram-бот для сбора новых публикаций из выбранных Telegram-каналов и X-аккаунтов,
-создания самостоятельных постов на их основе и публикации в вашем Telegram-канале.
+# Tweebit
 
-**По умолчанию бот присылает черновик владельцу. Публикация происходит только после
-нажатия «Опубликовать» или команды `/post ID`.** При первом запуске сбор стоит на паузе.
+**An AI-assisted editorial desk for your Telegram channel.**
 
-## Как работает
+Collect posts from selected Telegram and X sources, turn the best stories into original English drafts, and publish after review.
 
-1. Вы подключаете канал публикации и добавляете источники через кнопки админки в личном чате с ботом.
-2. Сервис опрашивает источники, сохраняет новые тексты и курсоры чтения в SQLite.
-3. Перед созданием текста AI оценивает соответствие темам, пользу, новизну и конкретику.
-   По умолчанию выбираются материалы об автоматизации и новостях с оценкой от 70/100,
-   до 5 новых черновиков в день.
-4. AI выделяет факты и пишет самостоятельный пост: новая подача, начало, порядок изложения
-   и формулировки. Факты, числа, имена, оговорки и атрибуция сохраняются; выдуманные выводы
-   и присвоение опыта автора исходника не допускаются.
-5. Отдельный вызов AI сравнивает результат с оригиналом. При обнаружении изменений
-   смысла, недостающего контекста или низкой уверенности пост блокируется. Отдельно оценивается
-   самостоятельность подачи: при копировании или замене слов синонимами запускается одна
-   повторная редакция и новая проверка. Если сходство сохраняется, текст блокируется.
-   Совпадения имён, чисел, терминов и атрибутированных цитат допустимы.
-6. Проверенный черновик без подписи источника приходит вам с кнопками подтверждения.
-7. Подтверждённый текст отправляется в подключённый канал. Результат сохраняется в базе.
+[![CI](https://github.com/mdvcode/ai-poster-/actions/workflows/ci.yml/badge.svg?branch=feat%2Ftelegram-ai-poster)](https://github.com/mdvcode/ai-poster-/actions/workflows/ci.yml)
+![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB)
+![Local first](https://img.shields.io/badge/Local-first-345b4c)
+![Human review](https://img.shields.io/badge/Publishing-human_review-d3f36b)
 
-Это проверка соответствия исходнику, а не проверка истинности исходной новости.
-AI-проверка может ошибаться: ручной просмотр остаётся необходимым для редакционного контроля.
+[Get started](#quick-start) · [User guide](docs/USER_GUIDE.md) · [Architecture](docs/ARCHITECTURE.md) · [Roadmap](docs/ROADMAP.md)
 
-## Веб-админка
+</div>
 
-Админка запускается вместе с ботом и доступна только на том же компьютере:
-`http://127.0.0.1:8765` по умолчанию. `WEB_PORT` меняет порт, `WEB_ENABLED=false` отключает сайт.
-Команда `/web` в личном чате с ботом (или кнопка «Веб-админка») выдаёт актуальную ссылку
-и одноразовый код на 10 минут. Вход доступен только владельцу; сессия в браузере длится
-12 часов и завершается при перезапуске сервиса. Ключи Telegram, Claude и X в браузер не передаются.
+> **Status:** a working, single-owner local application. Posts are English by default; the bot and editor interface are Russian. Collection starts paused, and publishing requires approval by default.
 
-- В «Черновиках» можно менять текст и удалять лишние абзацы, затем нажать «Сохранить».
-  Это ваша редакторская правка: AI не отменяет её из-за сокращения исходника. Ссылка на оригинал доступна только во вкладке «Оригинал» админки и не публикуется. Прежние кнопки подтверждения в Telegram не публикуют изменённую версию.
-- «Удалить» убирает целый пост из обработки и публикации. Запись сохраняется в разделе
-  «Удалено» для учёта повторов. Уже опубликованные посты эта кнопка из Telegram не удаляет.
-- Источники, канал, пауза и запуск используют те же настройки, что и Telegram-админка.
-- Перед публикацией показывается подтверждение. На паузе редактирование доступно,
-  сбор и автопубликация остановлены, ручная публикация доступна. Изменения в другой вкладке не перезаписываются молча.
+## What it does
 
-### Оформление публикаций
+| Step | What happens |
+| --- | --- |
+| Collect | Read only explicitly selected public Telegram channels and X accounts. Import up to 72 hours of available history when a source is connected. |
+| Select | Score relevance, usefulness, novelty and substance against editable editorial rules. Default: automation and news, at least 70/100, up to five drafts a day. |
+| Write | Compose a new English post with a headline, short paragraphs, meaningful lists and restrained emphasis. |
+| Check | Compare the draft with its source for missing facts, unsupported claims and excessive similarity. Check for duplicate coverage. |
+| Review | Preview, edit, restyle, delete or manually select rejected material in the local web editor. |
+| Publish | Send the approved post to your connected Telegram channel. Keep uncertain deliveries visible instead of blindly retrying. |
 
-Новые посты получают короткий фактический заголовок, короткие абзацы, списки для перечислений
-и умеренные жирные акценты. Допускается один уместный эмодзи в заголовке. Факты, числа,
-оговорки и атрибуция сохраняются; эффектные, но неподтверждённые выводы не добавляются.
+Sources are available privately in the editor. Published posts do not receive an automatic source footer.
 
-- **«Предпросмотр»** показывает выделения и абзацы до отправки. Он доступен и для несохранённых
-  правок; переключение между вкладками не стирает текст. Шрифт и ширина реального Telegram могут отличаться.
-- **«Редактировать»** позволяет менять текст: `**выделение**` — жирный, `• пункт` — пункт списка,
-  пустая строка — граница абзаца. Другие виды Markdown и HTML не интерпретируются.
-- **«✦ Оформить»** перерабатывает уже готовый текст и отдельно проверяет сохранение смысла.
-  При ошибке или одновременном изменении поста результат не перезаписывается. Оформление не
-  занимает новое место в дневном лимите черновиков и не публикует пост.
-- Telegram получает обычный текст с явными [entities](https://core.telegram.org/bots/api#messageentity)
-  для жирного выделения. HTML/parse_mode не используются; смещения учитывают UTF-16 и эмодзи.
-  Лимит 4096 считается по видимому тексту. Текст предпросмотра в боте и публикации одинаков.
+## Why local
 
-### Правила контента
+The editor binds to `127.0.0.1`. A one-time code from the Telegram bot opens the owner session. API keys stay on the server; posts and settings live in SQLite.
 
-В разделе **«Правила контента»** задаются темы, аудитория, категории исключений,
-дополнительные ограничения, минимальная оценка и дневной лимит. Стартовые темы —
-**автоматизация и новости**. Реклама/промокоды, розыгрыши, вакансии, анонсы мероприятий и
-рассуждения без конкретики исключены; фактическая новость о продукте не считается рекламой автоматически.
+**No personal Telegram account is connected.** Telegram sources use anonymous public previews. The application cannot read your private chats, contacts or private channels. Only channels you explicitly add are fetched.
 
-Каждый критерий (темы, польза, новизна, конкретика) оценивается от 0 до 25. Оценка и объяснение
-видны в карточке. Оцениваем до 50 материалов за цикл партиями по 10, затем выбираем лучшие
-из доступной оценённой очереди. Будущие новости не участвуют в сравнении. При большом потоке
-предварительный отбор может занять несколько циклов. Это дополнительный расход API на оценку,
-но отклонённые тексты не проходят более дорогую генерацию и проверку.
+## Quick start
 
-- **«Отклонено»** хранит неподходящие материалы с причиной. «Создать черновик» ставит материал
-  в приоритет очереди, обходя тематический отбор, но сохраняя лимит, проверку дублей и смысла.
-- При удалении можно выбрать «Не моя тема», «Реклама», «Неинтересно», «Повтор». Последние
-  12 таких примеров используются при следующем отборе; настройки сами не переписываются.
-- Дневной лимит (по умолчанию 5) считает созданные черновики, включая удалённые и повторно
-  созданные, и хранится в SQLite. Сутки идут по указанному часовому поясу (Europe/Berlin по умолчанию).
-  Очередь сверх лимита остаётся до следующего дня; слабые материалы лимит не заполняют.
-- При первом обновлении старые черновики учитываются по дате поступления исходника: точное
-  время их прежней генерации не сохранялось. Новые учитываются по времени создания черновика.
-- Смена правил заново оценивает ожидающие и отклонённые записи; готовые посты и пауза сохраняются.
-- Если выключить отбор, бот возвращается к обработке всей очереди без дневного лимита черновиков.
-
-### Защита от повторов
-
-Идентификатор источника и поста, а также точный текст защищены уникальными ограничениями SQLite.
-Дополнительно сравнивается текст без различий в регистре и пунктуации. Удалённые посты тоже
-участвуют в сравнении, чтобы повтор из другого канала не вернулся в очередь.
-При включённом отборе сначала обрабатываются материалы с наибольшей оценкой, при равенстве —
-с большей конкретикой. AI сравнивает их с максимум 20 кандидатами из последних 100 выбранных,
-опубликованных или удалённых записей за 14 дней. Среди готовящихся к публикации материалов
-об одном событии оставляет выбранный первым; существенное развитие события считается новым.
-При выключенном отборе сравниваются до пяти похожих кандидатов из последних 200 записей.
-Совпадение принимается только при уверенности AI не ниже 0.97.
-Это вероятностная проверка, она может пропустить сильно отличающийся пересказ или ошибиться.
-Перед отправкой дополнительно сравниваются исходник и итоговый текст с опубликованными
-или отправляемыми постами. Сомнительная отправка после сбоя не повторяется автоматически.
-
-## Требования
-
-- Python 3.12+ и [uv](https://docs.astral.sh/uv/getting-started/installation/).
-- Telegram-бот, созданный через [BotFather](https://t.me/BotFather), и ваш числовой Telegram user ID.
-- Anthropic API key для Claude (или OpenAI API key, если выбран OpenAI).
-- Для Telegram-источников: публичный канал с доступной страницей `https://t.me/s/username`.
-  Номер телефона, код входа, `api_id`, `api_hash` и пользовательская сессия не нужны.
-- Для X: Bearer Token приложения с доступом к чтению user timeline через официальный API.
-  Доступность и стоимость зависят от вашего доступа к X API; веб-скрейпинг не используется.
-
-Telegram Bot API используется только для управления и публикации. Источники Telegram
-читаются анонимно через публичные веб-страницы. Вход в личный Telegram-аккаунт удалён
-из приложения; библиотека Telethon больше не используется.
-
-## Границы доступа
-
-- Владелец явно добавляет источник в админке. При добавлении проверяется только указанный
-  канал/аккаунт; при опросе каждый запрос сверяется с активным списком источников в базе.
-- Без добавленных источников запросов на чтение контента нет. Удаление источника прекращает
-  его опрос. Посторонние пользователи не могут менять список через бота.
-- Telegram-читатель не имеет авторизации личного аккаунта и не может читать его личные
-  переписки, контакты или закрытые каналы. Авторизация по телефону/коду отсутствует.
-- HTTP-запросы читателя идут только на `t.me/s/<указанный username>`. Перенаправления запрещены,
-  cookies и заголовки авторизации не передаются. Ссылки, картинки и вложенные страницы не
-  открываются; парсер проверяет, что сообщения принадлежат указанному username.
-- Для X используется app-only Bearer Token: опрашиваются только выбранные публичные аккаунты.
-  Перед каждой страницей повторно проверяется разрешённый список.
-- Бот имеет отдельно выданные ему права в канале публикации. Добавляйте его только в нужный
-  канал и выдавайте право публикации; доступ к личному аккаунту для этого не нужен.
-- Тексты выбранных постов передаются выбранному AI-провайдеру для перефразирования и проверки.
-
-Если вы использовали старую версию с личной сессией, завершите созданную для сервиса сессию
-в Telegram → Настройки → Устройства / Активные сессии. Простого удаления файла недостаточно:
-нужно отозвать серверную авторизацию. Затем удалите локальные `*.session` и старые
-`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_PATH` из `.env`.
-Старые Telegram-источники с числовым ID нужно удалить и добавить заново: они намеренно
-не используются новым анонимным читателем.
-
-## Локальный запуск
+Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), a Telegram bot token, your numeric Telegram user ID, and an Anthropic or OpenAI API key.
 
 ```sh
+git clone https://github.com/mdvcode/ai-poster-.git
+cd ai-poster-
+git switch feat/telegram-ai-poster
 uv sync --frozen
 cp .env.example .env
-# Заполните .env локально. Не отправляйте ключи в чат или Git.
+# Fill in .env locally, then:
 uv run ai-poster run
 ```
 
-Обязательные переменные: `TELEGRAM_BOT_TOKEN`, `OWNER_ID` и ключ выбранного AI-провайдера.
-Пример `.env.example` настроен на Claude:
+Minimum configuration for Claude:
 
 ```dotenv
+TELEGRAM_BOT_TOKEN=your_bot_token
+OWNER_ID=your_numeric_user_id
 AI_PROVIDER=anthropic
-ANTHROPIC_API_KEY=ваш_ключ
-ANTHROPIC_MODEL=claude-sonnet-4-6
-VERIFY_MODEL=
+ANTHROPIC_API_KEY=your_anthropic_api_key
 ```
 
-Для OpenAI укажите `AI_PROVIDER=openai` и `OPENAI_API_KEY`.
-Ключ другого провайдера не нужен; автоматического переключения между провайдерами нет.
-Если `AI_PROVIDER` не задан, для совместимости со старой конфигурацией используется OpenAI.
-Для X нужен `X_BEARER_TOKEN`. Пример содержит все остальные настройки.
+Then, in the bot's private chat:
 
-Модель Claude задаётся `ANTHROPIC_MODEL` (по умолчанию `claude-sonnet-4-6`),
-модель OpenAI — `OPENAI_MODEL` (по умолчанию `gpt-4.1-mini`).
-Пустой `VERIFY_MODEL` использует ту же модель для независимой проверки; можно указать
-другую модель выбранного провайдера. При смене провайдера очищайте прежний `VERIFY_MODEL`.
-Для обоих провайдеров используются структурированные JSON-ответы с локальной валидацией.
-Язык постов задаётся `OUTPUT_LANGUAGE` (по умолчанию английский). Админка остаётся на русском.
-`POLL_INTERVAL_SECONDS` — период опроса, `MAX_POSTS_PER_CYCLE` — максимум обрабатываемых
-текстов за цикл, `PUBLISH_INTERVAL_SECONDS` — минимальный интервал между публикациями.
+1. Send `/start` to open the admin menu.
+2. Add the bot as an administrator of your destination channel with permission to publish.
+3. Connect the channel and add your chosen sources.
+4. Send `/web`, open the supplied local URL, and enter its one-time code.
+5. Review the content rules and enable collection.
+6. Review a ready draft, then publish it.
 
-В Telegram:
+The default editor address is `http://127.0.0.1:8765`; `WEB_PORT` changes it. Existing installations may use another port. `/web` always returns the configured address. A running Mac and network connection are required.
 
-1. Добавьте бота администратором вашего канала с правом публикации сообщений.
-2. Откройте личный чат с ботом и отправьте `/start`.
-3. Откроется **админка с кнопками**:
-   - **Мой канал** — отправьте ссылку, @username или перешлите публикацию из вашего канала.
-   - **Источники → ＋ Telegram / ＋ X** — отправьте ссылку или @username источника.
-   - **Включить сбор** — запустите обработку новых записей.
-   - **Черновики** — просматривайте тексты, оригиналы и результаты проверки.
-   - **Пауза** — остановите сбор и публикации.
+## Illustrations
 
-Админку можно открыть снова через кнопку **Меню → Открыть админку** в Telegram или `/admin`.
-Для удаления источника откройте «Источники» и выберите «Удалить» рядом с нужным аккаунтом.
-Списки источников и черновиков поддерживают переходы между страницами. Ввод ссылки можно
-отменить кнопкой; он сохраняется при перезапуске бота и истекает через 15 минут.
-Раздел «Публикация» позволяет включить автоматический режим только после отдельного
-подтверждения. По умолчанию остаётся ручное подтверждение каждого поста.
-Кнопка X объясняет настройку доступа, если `X_BEARER_TOKEN` ещё не заполнен.
+The image workflow uses **FLUX.1 Schnell through fal.ai**, with generation initiated by the owner. Configure `FAL_KEY` locally to enable it; text generation can keep using Claude. See [image setup and costs](docs/IMAGES.md).
 
-Также можно использовать прежние команды:
+Images are conceptual illustrations, not evidence of reported events. They require review before being attached to a post. Image API access is separate from your Claude subscription/API balance.
 
-```text
-/channel @my_channel
-/add telegram @source_channel
-/add x @source_account
-/resume
-```
+## Configuration
 
-Для закрытого канала публикации укажите числовой ID вида `-100…` в `/channel`.
-Поддерживаются публичные Telegram-источники по username или ссылке `https://t.me/name`;
-для X — username, `https://x.com/name` или `https://twitter.com/name`.
-При добавлении источника загружаются доступные посты за последние 72 часа, затем новые.
-Начало периода фиксируется при добавлении; пауза или ошибка не сдвигают его вперёд.
-Посты старше этого периода не попадают в очередь. Дата определяется по времени публикации,
-а не редактирования. Для Telegram нужна доступная публичная история с датами публикаций;
-для X используется `start_time` ([документация API](https://docs.x.com/x-api/users/get-posts)).
-Повторное включение отключённого источника также запрашивает последние 72 часа.
-Повторное добавление уже активного источника не перезапускает загрузку истории.
-При первом запуске этой версии существующим активным источникам назначается однократная
-загрузка за 72 часа до обновления. Дедупликация сохраняется: обработанные посты повторно
-не отправляются. Завершение загрузки и сохранение постов происходят одной транзакцией.
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Bot token from BotFather | Required |
+| `OWNER_ID` | Numeric owner ID; private-chat controls only | Required |
+| `AI_PROVIDER` | `anthropic` or `openai` | `.env.example`: `anthropic` |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Key for the selected text provider | One required |
+| `ANTHROPIC_MODEL` / `OPENAI_MODEL` | Text model | See `.env.example` |
+| `VERIFY_MODEL` | Optional verification model from the same provider | Same as writing model |
+| `X_BEARER_TOKEN` | X app-only token with timeline-read access | Optional |
+| `FAL_KEY` | fal.ai image generation API key | Optional |
+| `IMAGE_DAILY_LIMIT` | Image attempts per editorial day, including failures | `10` |
+| `DATABASE_PATH` | SQLite database | `data/poster.sqlite3` |
+| `POLL_INTERVAL_SECONDS` | Delay after a collection/processing cycle | `300` |
+| `MAX_POSTS_PER_CYCLE` | Maximum pending posts processed in a cycle | `5` |
+| `PUBLISH_INTERVAL_SECONDS` | Minimum interval between publications | `60` |
+| `OUTPUT_LANGUAGE` | Generated post language | `English` |
+| `WEB_ENABLED` / `WEB_PORT` | Local editor | `true` / `8765` |
 
-Команды принимает только `OWNER_ID` и только в личном чате. При подключении канала
-бот проверяет ваши права администратора и собственное право публикации.
+Editorial topics, exclusions, scoring threshold, timezone and daily draft limit are configured in the editor, not in environment variables. Keys are never committed. See [security and privacy](SECURITY.md).
 
-## Команды
+## Important limits
 
-| Команда | Действие |
-| --- | --- |
-| `/admin` | Открыть админку с кнопками |
-| `/channel @name` | Подключить канал публикации |
-| `/add telegram @name`, `/add x @name` | Добавить источник |
-| `/sources` | Список источников, их ID и текущие ошибки |
-| `/remove ID` | Отключить источник и отменить его незавершённую очередь |
-| `/resume`, `/pause` | Запустить / остановить сбор и автопубликацию; ручная публикация доступна на паузе |
-| `/run` | Запросить ближайший цикл; не снимает паузу |
-| `/mode manual` | Отправлять черновики на подтверждение — режим по умолчанию |
-| `/mode auto` | Явно включить автоматическую публикацию проверенных текстов |
-| `/queue` | Последние 20 незавершённых постов |
-| `/show ID`, `/original ID` | Черновик/причина блокировки или оригинальный текст |
-| `/post ID`, `/skip ID` | Опубликовать проверенный черновик / пропустить |
-| `/retry ID` | Заново обработать пост после ошибки или блокировки, включая проверку смысла |
-| `/resolve ID sent` | После проверки канала отметить неопределённую отправку как успешную |
-| `/resolve ID retry` | После проверки отсутствия поста разрешить повторную отправку |
-| `/status`, `/help` | Состояние сервиса / помощь |
+- Meaning checks compare a draft to its source; they **do not independently verify the news**. Review headlines and factual claims before publishing.
+- Semantic duplicate detection is probabilistic. Significant new developments should pass, but mistakes are possible.
+- Telegram public previews may change or become unavailable. Private channels, account login and access workarounds are not supported.
+- Source images, videos, polls and linked articles are not read or copied. X replies, reposts and context-dependent quote posts are skipped.
+- One owner, one active destination channel and one process per bot/database. Existing drafts stay bound to their original destination.
+- Drafts longer than Telegram's limit are blocked rather than silently truncated.
+- A sending timeout may mean a message was delivered. Check the channel before resolving an uncertain send; there is no exactly-once guarantee.
+- Docker currently runs the bot; its loopback-bound web editor is not exposed by the supplied Compose file. Use the native quick start for the local editor.
 
-`/mode auto` распространяется и на уже готовые черновики. Режим и пауза сохраняются
-между перезапусками. Пауза не отменяет запрос отправки, который уже ушёл в Telegram.
-Черновики привязаны к каналу, выбранному в момент сбора; смена канала не перенаправляет
-старую очередь. Чтобы обработать её, подключите прежний канал или пропустите старые посты.
-
-## Надёжность
-
-- Курсор источника и новые посты записываются одной транзакцией.
-- Уникальность ID исходного поста и хэша нормализованного текста предотвращает повторный
-  импорт, в том числе одинакового текста из разных источников в один канал.
-  Семантическая дедупликация разных формулировок одной новости не выполняется.
-- Страницы X собираются целиком перед продвижением курсора. При ошибке страницы
-  курсор остаётся прежним. История всё равно ограничена доступностью данных у провайдера.
-- Ошибки AI повторяются с увеличивающейся задержкой, максимум три попытки; далее нужен `/retry`.
-- Непрошедший проверку текст нельзя опубликовать через `/post` или в режиме auto.
-- Проверяется сохранение смысла исходника, а не истинность новости по знаниям модели.
-  Незнакомые названия и дата после обучения модели сами по себе не причина блокировки.
-  Уведомление о блокировке показывает причину и кнопки просмотра поста и оригинала.
-  Команда `/show` без номера открывает очередь с кнопками. Готовые черновики отправляются
-  по мере обработки, без ожидания всей партии.
-- Нажатие кнопки старой версии черновика не публикует новую версию без её просмотра.
-- Ошибка Telegram 429 учитывает `retry_after`. В ручном режиме подтверждение нужно повторить позже.
-- При таймауте отправки, ответе 5xx или падении процесса после начала отправки пост получает
-  состояние `uncertain`. Автоповтор запрещён: сначала проверьте канал и используйте `/resolve`.
-  Telegram Bot API не предоставляет ключ идемпотентности; абсолютная гарантия exactly-once
-  невозможна. Неопределённость показывается явно вместо автоматической повторной отправки.
-- Необратимые команды из updates не воспроизводятся после сбоя. Если процесс упал во время
-  обработки команды, проверьте `/status` или `/queue` и при необходимости повторите команду.
-- Файловая блокировка допускает один процесс на базу. Запускайте один экземпляр на bot token;
-  несколько реплик и одновременный webhook не поддерживаются.
-- Секреты и SQLite исключены из Git и Docker build context. Пользовательские Telegram-сессии
-  не создаются и не загружаются. Ключи не включаются в тексты запросов к AI.
-
-## Границы первой версии
-
-Telegram-источники должны иметь публичный веб-просмотр. Закрытые каналы, контент с требованием
-входа и недоступные веб-публикации не читаются; сервис не пытается обходить ограничения.
-Публичный веб-просмотр не является стабильным API: если Telegram изменит HTML или ограничит
-доступ, чтение остановится с ошибкой. Канал идентифицируется его публичным username;
-смена владельца username не может надёжно определяться по этой странице.
-Пагинация ограничена 50 страницами за цикл; при ошибке курсор не продвигается.
-
-Работает с текстовыми постами и подписями к медиа. Фото, видео, альбомы, опросы и вложения
-не копируются и не анализируются; сообщения без текста пропускаются. X replies, reposts и
-цитирования с внешним контекстом пропускаются. Цепочки сообщений и связанные статьи не
-склеиваются. Изменения уже прочитанных постов не синхронизируются.
-
-Длинные тексты не обрезаются: если исходник длиннее 16 000 символов или готовая публикация
-не помещается в 4096 UTF-16 единиц, пост блокируется для сохранения смысла.
-Это сервис для одного владельца и одного текущего канала публикации, с SQLite на локальном диске.
-
-## Docker
+## Development
 
 ```sh
-cp .env.example .env
-# Заполните .env.
-docker compose build
-docker compose up -d
-docker compose logs -f
-```
-
-База хранится в named volume `poster-data`. Не удаляйте volume при обновлении.
-Резервную копию базы делайте после остановки сервиса. Вход в личный Telegram не выполняется.
-Контейнер работает от непривилегированного пользователя. Ключи передаются через `.env` при запуске.
-
-## Проверки
-
-```sh
+uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
+node --check src/ai_poster/static/app.js
 uv build
 ```
 
-Тесты используют временную SQLite и HTTP-заглушки. Они проверяют полный путь от источника
-до подтверждения, ограничения владельца, дедупликацию, пагинацию, смысловой фильтр,
-ограничения Telegram и восстановление после сбоя. Ключи API для тестов не нужны.
-Для проверки вживую подключите тестовый канал, добавьте источник, создайте в нём новый
-текстовый пост и пройдите цикл «черновик → подтверждение → канал».
+Tests use temporary databases and mocked external APIs. They do not need production keys and do not publish to your channel.
 
-Основные контракты интеграций: [Telegram Bot API](https://core.telegram.org/bots/api),
-[публичные публикации Telegram](https://core.telegram.org/widgets/post),
-[X user timeline](https://docs.x.com/x-api/users/get-posts),
-[официальный пример X с `note_tweet`](https://github.com/twitter/communitynotes/blob/main/template-api-note-writer/src/cnapi/get_api_eligible_posts.py),
-[OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs),
-[Claude Structured Outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout and contribution workflow. The [product review and roadmap](docs/ROADMAP.md) separates implemented features from remaining work.
