@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ai_poster.editorial import ScreeningBatch
 from ai_poster.formatting import render_post
 from ai_poster.telegram import utf16_len
+from ai_poster.usage import UsageMeter
 
 SEMANTIC_SCOPE = (
     "Your task is semantic fidelity to the supplied source, NOT independent fact-checking. "
@@ -85,9 +86,10 @@ class TooSimilarError(QualityError):
 
 
 class Rewriter:
-    def __init__(self, settings, client: httpx.AsyncClient):
+    def __init__(self, settings, client: httpx.AsyncClient, store=None):
         self.settings = settings
         self.client = client
+        self.meter = UsageMeter(store) if store is not None else None
 
     async def screen(self, posts, rules, feedback):
         result = await self.structured(
@@ -152,6 +154,20 @@ class Rewriter:
         return None
 
     async def structured(self, model: str, schema, system: str, data: dict):
+        if self.meter is None:
+            return await self._structured(model, schema, system, data)
+        stage = {
+            "ScreeningBatch": "screening",
+            "DuplicateReview": "deduplication",
+            "Rewrite": "writing",
+            "Verification": "verification",
+            "FidelityReview": "verification",
+            "ImageBrief": "image_brief",
+        }[schema.__name__]
+        with self.meter.call(self.settings.ai_provider, model, stage):
+            return await self._structured(model, schema, system, data)
+
+    async def _structured(self, model: str, schema, system: str, data: dict):
         if self.settings.ai_provider == "anthropic":
             return await self.anthropic_structured(model, schema, system, data)
         response = await self.client.post(
@@ -176,7 +192,10 @@ class Rewriter:
             timeout=90,
         )
         response.raise_for_status()
-        choice = response.json()["choices"][0]
+        result = response.json()
+        if self.meter:
+            self.meter.response("openai", result.get("model", model), result)
+        choice = result["choices"][0]
         if choice["finish_reason"] != "stop" or choice["message"].get("refusal"):
             raise QualityError("Модель отказалась или не завершила ответ.")
         return schema.model_validate_json(choice["message"]["content"])
@@ -219,6 +238,8 @@ class Rewriter:
         )
         response.raise_for_status()
         result = response.json()
+        if self.meter:
+            self.meter.response("anthropic", result.get("model", model), result)
         blocks = result.get("content", [])
         if (
             result.get("stop_reason") != "end_turn"

@@ -26,9 +26,17 @@ Newly added sources import up to 72 hours of available text posts; existing sour
 
 Open **Правила контента**. Defaults are automation and news, a minimum score of 70/100, and five drafts per day. Each material receives up to 25 points for relevance, usefulness, novelty and substance. Exclusions and optional deletion feedback guide selection.
 
-Screened candidates are ranked before writing. Manual **Создать черновик** prioritizes a material but still respects the daily limit, duplicate checks and fidelity checks. Changing the rules re-evaluates pending/rejected materials; it does not silently rewrite existing drafts.
+Each cycle snapshots up to 50 candidates, alternating sources and prioritizing their recent materials. It scores batches of up to ten, then starts writing without waiting for the rest of the queue. Generation takes one best candidate per source per round; persisted rotation prevents a busy source from monopolizing subsequent cycles. Manual **Создать черновик** prioritizes a material but still respects the daily limit, duplicate checks and fidelity checks. Changing the rules re-evaluates pending/rejected materials; it does not silently rewrite existing drafts.
 
 The daily limit counts generated drafts, not published posts. It resets according to the selected timezone. Meaning checks compare the draft with its source, not with independently verified reporting.
+
+## Check freshness and spending
+
+**Максимальный возраст новости** defaults to 72 hours. Set 0 to disable it. The age comes from the source publication time, not the time it entered Tweebit. Expired pending posts are filtered before paid processing; **Создать черновик** can explicitly override this. The limit also applies when editorial scoring is disabled. Automatic publication rechecks age; manual publication shows a freshness warning.
+
+Older database records may have no source timestamp. They show **Дата источника неизвестна** and remain eligible; verify their freshness yourself. Re-reading an already known source post can fill in the date without duplicating the record. This update does not silently re-fetch the historical backlog.
+
+Open **Расходы AI** for totals and stages; the post editor shows its own estimated cost. Unknown charges are marked separately, and all historical spending before the ledger started is unknown. See [what the estimates include](USAGE.md).
 
 ## Make a post readable
 

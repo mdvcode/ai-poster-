@@ -66,6 +66,7 @@ class Store:
                 ("image_id", "TEXT"),
                 ("image_candidate", "TEXT"),
                 ("image_message_id", "INTEGER"),
+                ("published_at", "REAL"),
             ):
                 if column not in columns:
                     self.db.execute(f"ALTER TABLE posts ADD COLUMN {column} {definition}")
@@ -95,6 +96,24 @@ class Store:
                 created REAL NOT NULL, status TEXT NOT NULL);
             UPDATE image_attempts SET status='interrupted' WHERE status='running';
         """)
+        self.db.executescript("""
+            CREATE INDEX IF NOT EXISTS posts_selection
+                ON posts(target,state,source_id,published_at DESC);
+            CREATE TABLE IF NOT EXISTS ai_calls (
+                id TEXT PRIMARY KEY,created REAL NOT NULL,provider TEXT NOT NULL,
+                model TEXT NOT NULL,stage TEXT NOT NULL,status TEXT NOT NULL,
+                input_tokens INTEGER,output_tokens INTEGER,cached_tokens INTEGER,
+                cache_write_tokens INTEGER,cache_write_long_tokens INTEGER,usd REAL,
+                rate_version TEXT NOT NULL,error_type TEXT,response_received INTEGER DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS ai_calls_created ON ai_calls(created);
+            CREATE TABLE IF NOT EXISTS ai_call_posts (
+                call_id TEXT NOT NULL REFERENCES ai_calls(id),
+                post_id INTEGER NOT NULL REFERENCES posts(id),PRIMARY KEY(call_id,post_id));
+            CREATE INDEX IF NOT EXISTS ai_call_posts_post ON ai_call_posts(post_id);
+            UPDATE ai_calls SET status='interrupted' WHERE status='running';
+        """)
+        if not self.get("usage_tracking_since"):
+            self.set("usage_tracking_since", str(time.time()))
         # A crash after sending but before recording success cannot be safely retried.
         with self.db:
             self.db.execute("UPDATE posts SET state='uncertain' WHERE state='sending'")
@@ -181,8 +200,9 @@ class Store:
                 digest = hashlib.sha256(" ".join(item.text.split()).encode()).hexdigest()
                 self.db.execute(
                     """INSERT OR IGNORE INTO posts
-                    (source_id, external_id, original, url, target, digest, created,content_key)
-                    VALUES (?,?,?,?,?,?,?,?)""",
+                    (source_id, external_id, original, url, target, digest,
+                    created,content_key,published_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)""",
                     (
                         source_id,
                         item.id,
@@ -192,8 +212,16 @@ class Store:
                         digest,
                         time.time(),
                         content_key(item.text),
+                        item.published_at,
                     ),
                 )
+                # A replay may recover a real source timestamp; never substitute ingestion time.
+                if item.published_at is not None:
+                    self.db.execute(
+                        """UPDATE posts SET published_at=? WHERE source_id=?
+                        AND external_id=? AND published_at IS NULL""",
+                        (item.published_at, source_id, item.id),
+                    )
             self.db.execute(
                 "UPDATE sources SET cursor=?,error=NULL,history_since=NULL WHERE id=?",
                 (cursor, source_id),
@@ -325,13 +353,46 @@ class Store:
                 reason=NULL,attempts=0,next_attempt=0
                 WHERE state IN ('pending','filtered') AND draft IS NULL""")
 
+    def stale(self, post, rules=None):
+        rules = rules or self.content_rules()
+        return bool(
+            rules.max_age_hours
+            and post["published_at"] is not None
+            and post["published_at"] < time.time() - rules.max_age_hours * 3600
+        )
+
+    def expire_candidates(self, rules):
+        if not rules.max_age_hours:
+            return
+        with self.db:
+            self.db.execute(
+                """UPDATE posts SET state='filtered',reason=?
+                WHERE state='pending' AND target=? AND editorial_override=0
+                AND published_at IS NOT NULL AND published_at<?""",
+                (
+                    f"Старше {rules.max_age_hours} ч. Можно выбрать вручную.",
+                    self.get("target"),
+                    time.time() - rules.max_age_hours * 3600,
+                ),
+            )
+
     def screening_work(self, revision, limit=10):
         return self.db.execute(
-            """SELECT p.* FROM posts p JOIN sources s ON s.id=p.source_id
-            WHERE p.state='pending' AND s.active=1 AND p.target=? AND p.editorial_override=0
-            AND coalesce(p.editorial_revision,'')!=? AND p.next_attempt<=?
-            ORDER BY p.id LIMIT ?""",
-            (self.get("target"), revision, time.time(), limit),
+            """WITH ranked AS (
+                SELECT p.*, row_number() OVER (PARTITION BY p.source_id
+                    ORDER BY p.published_at DESC NULLS LAST,p.id DESC) AS source_rank
+                FROM posts p JOIN sources s ON s.id=p.source_id
+                WHERE p.state='pending' AND s.active=1 AND p.target=? AND p.editorial_override=0
+                AND coalesce(p.editorial_revision,'')!=? AND p.next_attempt<=?)
+            SELECT * FROM ranked ORDER BY source_rank,
+                (source_id<=?),source_id LIMIT ?""",
+            (
+                self.get("target"),
+                revision,
+                time.time(),
+                int(self.get("screen_source_cursor", "0")),
+                limit,
+            ),
         ).fetchall()
 
     def apply_screening(self, result, rules):
@@ -353,13 +414,26 @@ class Store:
 
     def editorial_work(self, rules, limit):
         return self.db.execute(
-            """SELECT p.* FROM posts p JOIN sources s ON s.id=p.source_id
-            WHERE p.state='pending' AND p.target=? AND s.active=1 AND p.next_attempt<=?
-            AND (p.editorial_override=1 OR (p.editorial_revision=? AND p.editorial_score>=?))
-            ORDER BY p.editorial_override DESC, p.editorial_score DESC,
-                json_extract(p.editorial_detail,'$.substance') DESC, p.id
-            LIMIT ?""",
-            (self.get("target"), time.time(), rules.revision, rules.min_score, limit),
+            """WITH ranked AS (
+                SELECT p.*,row_number() OVER (PARTITION BY p.source_id ORDER BY
+                    p.editorial_override DESC,p.editorial_score DESC,
+                    json_extract(p.editorial_detail,'$.substance') DESC,
+                    p.published_at DESC NULLS LAST,p.id) AS source_rank
+                FROM posts p JOIN sources s ON s.id=p.source_id
+                WHERE p.state='pending' AND p.target=? AND s.active=1 AND p.next_attempt<=?
+                AND (p.editorial_override=1 OR (p.editorial_revision=? AND p.editorial_score>=?)))
+            SELECT * FROM ranked ORDER BY editorial_override DESC,source_rank,
+                (source_id<=?),CASE WHEN ?=0 THEN -coalesce(editorial_score,0)
+                ELSE source_id END,source_id LIMIT ?""",
+            (
+                self.get("target"),
+                time.time(),
+                rules.revision,
+                rules.min_score,
+                int(self.get("draft_source_cursor", "0")),
+                int(self.get("draft_source_cursor", "0")),
+                limit,
+            ),
         ).fetchall()
 
     def drafts_today(self, rules):

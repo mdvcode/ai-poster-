@@ -27,6 +27,7 @@ flowchart LR
 | `db.py` | Schema migrations, cursors, queue states, revisions, history, image blobs and attempts. |
 | `worker.py` | Collection/processing loop, race checks, owner previews and publication. |
 | `formatting.py` | Supported bold notation → plain Telegram text and UTF-16 entities. |
+| `usage.py` | Durable per-call token/cost ledger, task-local post attribution and calendar summaries. |
 | `images.py` | One synchronous fal request, safe inline JPEG validation, redacted provider failures. |
 | `telegram.py` | Bot API calls and multipart photo sending. |
 | `bot.py` | Owner-only commands and inline actions. |
@@ -36,6 +37,8 @@ flowchart LR
 ## State and consistency
 
 Posts move from `pending` to `ready`, `filtered`, `duplicate`, `blocked` or `failed`. Publishing commits `sending` before the external request, then records `published`, `send_failed` or `uncertain`. A known rate limit returns the post to `ready` with a retry time. Deleted and skipped records stay available to duplicate detection.
+
+Original publication timestamps are stored independently of ingestion timestamps; missing dates remain null. A configurable age cutoff filters pending candidates, with an explicit owner override. Screening uses a snapshot of at most 50 posts selected across sources. Generation rotates through the best scored candidates per source, so a continuing backlog does not block every draft.
 
 Cursors advance in the transaction that stores the collected posts. Draft history supports the daily budget. Post revisions bind approval to saved state, text and selected image; stale web edits and bot approval callbacks are rejected. Publication and shared mutations use a worker lock. Long text/image-model calls run outside it and recheck state before committing results.
 
