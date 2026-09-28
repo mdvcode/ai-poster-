@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     anthropic_model: str = "claude-sonnet-4-6"
     verify_model: str = ""
+    fal_key: SecretStr = SecretStr("")
+    image_daily_limit: int = Field(default=10, ge=1, le=100)
     x_bearer_token: SecretStr = SecretStr("")
     database_path: str = "data/poster.sqlite3"
     poll_interval_seconds: int = Field(default=300, ge=30)

@@ -9,12 +9,13 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from ai_poster.ai import QualityError
 from ai_poster.db import post_version
 from ai_poster.editorial import EXCLUSIONS, FEEDBACK, ContentRules
+from ai_poster.images import ImageError, ImageGenerator
 from ai_poster.telegram import TelegramError
 
 STATIC = Path(__file__).with_name("static")
@@ -38,6 +39,7 @@ class WebAdmin:
     def __init__(self, bot):
         self.bot = bot
         self.store = bot.store
+        self.images = ImageGenerator(bot.settings, bot.telegram.client)
         self.sessions = {}
         self.attempts = []
         port = bot.settings.web_port
@@ -52,6 +54,7 @@ class WebAdmin:
                 Route("/api/state", self.state),
                 Route("/api/rules", self.rules, methods=["GET", "PUT"]),
                 Route("/api/posts", self.posts),
+                Route("/api/images/{image_id}", self.image_file),
                 Route("/api/posts/{post_id:int}", self.post, methods=["GET", "PATCH", "DELETE"]),
                 Route("/api/posts/{post_id:int}/{action}", self.post_action, methods=["POST"]),
                 Route("/api/control", self.control, methods=["POST"]),
@@ -156,6 +159,11 @@ class WebAdmin:
                 "sources": [dict(s) for s in self.store.sources()],
                 "processing_id": self.bot.worker.processing_id,
                 "language": self.bot.settings.output_language,
+                "images": {
+                    "configured": self.images.configured,
+                    "used_today": self.store.image_attempts_today(),
+                    "daily_limit": self.bot.settings.image_daily_limit,
+                },
                 "editorial": self.rules_state(),
             }
         )
@@ -203,6 +211,8 @@ class WebAdmin:
         data = dict(post)
         data["version"] = post_version(post)
         data["body"] = post["draft"] or ""
+        data["images"] = self.store.images_for(post["id"])
+        data["image_busy"] = self.store.image_busy(post["id"])
         return data
 
     async def post(self, request):
@@ -227,6 +237,8 @@ class WebAdmin:
         post_id = request.path_params["post_id"]
         action = request.path_params["action"]
         data = await request.json()
+        if action == "generate-image":
+            return await self.generate_image(post_id, data)
         if action == "style":
             return await self.style_post(post_id, data)
         async with self.bot.worker.lock:
@@ -237,6 +249,12 @@ class WebAdmin:
                 )
             if action == "publish":
                 result = await self.bot.worker.publish(post_id, manual=True)
+            elif action == "select-image":
+                try:
+                    self.store.select_image(post_id, data["version"], data.get("image_id"))
+                except ValueError as exc:
+                    return JSONResponse({"error": str(exc)}, status_code=409)
+                result = "Обложка выбрана." if data.get("image_id") else "Публикация без картинки."
             elif action == "choose":
                 try:
                     self.store.choose_post(post_id, data["version"])
@@ -252,6 +270,8 @@ class WebAdmin:
                     post_id,
                     state="pending",
                     draft=None,
+                    image_id=None,
+                    image_candidate=None,
                     reason=None,
                     attempts=0,
                     next_attempt=0,
@@ -262,6 +282,56 @@ class WebAdmin:
             else:
                 return JSONResponse({"error": "Действие недоступно."}, status_code=409)
         return JSONResponse({"message": result, "post": self.detail(self.store.post(post_id))})
+
+    async def image_file(self, request):
+        image = self.store.image(request.path_params["image_id"])
+        if not image:
+            return JSONResponse({"error": "Изображение не найдено."}, status_code=404)
+        return Response(image["content"], media_type="image/jpeg")
+
+    async def generate_image(self, post_id, data):
+        if not self.images.configured:
+            return JSONResponse(
+                {"error": "Добавьте FAL_KEY в .env и перезапустите сервис."}, status_code=503
+            )
+        direction = data.get("direction", "")
+        if not isinstance(direction, str) or len(direction) > 1000:
+            raise ValueError("direction")
+        async with self.bot.worker.lock:
+            try:
+                attempt = self.store.start_image(
+                    post_id, data["version"], self.bot.settings.image_daily_limit
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            post = self.store.post(post_id)
+        status = "failed"
+        try:
+            prompt = await self.bot.worker.rewriter.image_prompt(post["draft"], direction)
+            content = await self.images.generate(prompt)
+            async with self.bot.worker.lock:
+                current = self.store.post(post_id)
+                if (
+                    not current
+                    or current["state"] != "ready"
+                    or post_version(current) != data["version"]
+                ):
+                    return JSONResponse(
+                        {"error": "Пост изменился во время генерации. Картинка не прикреплена."},
+                        status_code=409,
+                    )
+                self.store.save_image(post_id, content, prompt)
+                status = "succeeded"
+        except ImageError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        finally:
+            self.store.finish_image(attempt, status)
+        return JSONResponse(
+            {
+                "post": self.detail(self.store.post(post_id)),
+                "message": "Картинка готова. Просмотрите её и нажмите «Использовать».",
+            }
+        )
 
     async def style_post(self, post_id, data):
         post = self.store.post(post_id)

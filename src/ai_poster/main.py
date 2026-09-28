@@ -53,7 +53,7 @@ async def serve(settings):
                     commands=[
                         {"command": "admin", "description": "Открыть админку"},
                         {"command": "start", "description": "Начать работу"},
-                        {"command": "pause", "description": "Остановить сбор и публикации"},
+                        {"command": "pause", "description": "Остановить сбор и автопубликацию"},
                         {"command": "help", "description": "Все команды"},
                         {"command": "web", "description": "Вход в веб-админку"},
                     ],

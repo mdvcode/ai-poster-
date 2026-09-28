@@ -212,14 +212,18 @@ class Bot:
             if command == "/post":
                 if len(args) == 2:
                     post = self.store.post(int(args[0]))
-                    if not post or draft_revision(post["draft"] or "") != args[1]:
+                    if not post or draft_revision(post["draft"] or "", post["image_id"]) != args[1]:
                         return "Черновик изменился. Откройте актуальный текст через /show ID."
                 return await self.worker.publish(int(args[0]), manual=True)
             if command in {"/skip", "/retry", "/resolve"}:
                 post = self.store.post(int(args[0]))
                 if not post:
                     return "Пост не найден."
-                if command == "/skip" and post["state"] not in {"published", "sending"}:
+                if (
+                    command == "/skip"
+                    and post["state"] not in {"published", "sending", "uncertain"}
+                    and not post["image_message_id"]
+                ):
                     self.store.update_post(post["id"], state="skipped")
                     return "Пост пропущен."
                 if command == "/retry" and post["state"] in {"failed", "blocked", "send_failed"}:
@@ -230,6 +234,8 @@ class Bot:
                         next_attempt=0,
                         notified=0,
                         draft=None,
+                        image_id=None,
+                        image_candidate=None,
                         reason=None,
                     )
                     self.worker.wakeup.set()
