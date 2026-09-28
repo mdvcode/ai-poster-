@@ -17,6 +17,7 @@ from ai_poster.db import post_version
 from ai_poster.editorial import EXCLUSIONS, FEEDBACK, ContentRules
 from ai_poster.images import ImageError, ImageGenerator
 from ai_poster.telegram import TelegramError
+from ai_poster.usage import UsageMeter, usage_scope
 
 STATIC = Path(__file__).with_name("static")
 
@@ -39,7 +40,8 @@ class WebAdmin:
     def __init__(self, bot):
         self.bot = bot
         self.store = bot.store
-        self.images = ImageGenerator(bot.settings, bot.telegram.client)
+        self.images = ImageGenerator(bot.settings, bot.telegram.client, self.store)
+        self.meter = UsageMeter(self.store)
         self.sessions = {}
         self.attempts = []
         port = bot.settings.web_port
@@ -52,6 +54,7 @@ class WebAdmin:
                 Route("/api/login", self.login, methods=["POST"]),
                 Route("/api/logout", self.logout, methods=["POST"]),
                 Route("/api/state", self.state),
+                Route("/api/usage", self.usage),
                 Route("/api/rules", self.rules, methods=["GET", "PUT"]),
                 Route("/api/posts", self.posts),
                 Route("/api/images/{image_id}", self.image_file),
@@ -149,6 +152,9 @@ class WebAdmin:
         response.delete_cookie("tweebit_session")
         return response
 
+    async def usage(self, request):
+        return JSONResponse(self.meter.summary())
+
     async def state(self, request):
         return JSONResponse(
             {
@@ -194,7 +200,7 @@ class WebAdmin:
         ).fetchone()[0]
         rows = self.store.db.execute(
             f"""SELECT p.id,p.state,p.draft,p.original,p.reason,p.created,
-                p.edited_by_owner,p.editorial_score,p.editorial_override,s.handle,s.kind
+                p.published_at,p.edited_by_owner,p.editorial_score,p.editorial_override,s.handle,s.kind
                 FROM posts p JOIN sources s ON s.id=p.source_id WHERE {where}
                 ORDER BY p.id DESC LIMIT 20 OFFSET ?""",
             (*params, page * 20),
@@ -212,8 +218,29 @@ class WebAdmin:
         data["version"] = post_version(post)
         data["body"] = post["draft"] or ""
         data["images"] = self.store.images_for(post["id"])
+        data["stale"] = self.store.stale(post)
+        data["usage"] = self.meter.post_summary(post["id"])
+        data["waiting_reason"] = self.waiting_reason(post)
         data["image_busy"] = self.store.image_busy(post["id"])
         return data
+
+    def waiting_reason(self, post):
+        if post["state"] != "pending":
+            return None
+        if self.store.get("paused") == "1":
+            return "Сбор на паузе."
+        if post["next_attempt"] > time.time():
+            return "Ожидает повторной попытки после ошибки API."
+        rules = self.store.content_rules()
+        if rules.enabled and self.store.drafts_today(rules) >= rules.daily_limit:
+            return "Дневной лимит черновиков достигнут; ждёт следующего дня."
+        if self.bot.worker.processing_id == post["id"]:
+            return "AI пишет и проверяет этот пост."
+        if not rules.enabled or post["editorial_override"]:
+            return "Ожидает создания текста."
+        if post["editorial_revision"] != rules.revision:
+            return "Ждёт своей выборки для оценки; источники чередуются."
+        return "Оценён; ждёт создания текста с учётом оценки и очередности источников."
 
     async def post(self, request):
         post_id = request.path_params["post_id"]
@@ -307,8 +334,9 @@ class WebAdmin:
             post = self.store.post(post_id)
         status = "failed"
         try:
-            prompt = await self.bot.worker.rewriter.image_prompt(post["draft"], direction)
-            content = await self.images.generate(prompt)
+            with usage_scope(post_id):
+                prompt = await self.bot.worker.rewriter.image_prompt(post["draft"], direction)
+                content = await self.images.generate(prompt)
             async with self.bot.worker.lock:
                 current = self.store.post(post_id)
                 if (
@@ -338,7 +366,8 @@ class WebAdmin:
         if not post or post["state"] != "ready" or post_version(post) != data.get("version"):
             return JSONResponse({"error": "Черновик изменился или недоступен."}, status_code=409)
         try:
-            styled = await self.bot.worker.rewriter.restyle(post["draft"])
+            with usage_scope(post_id, stage="restyle"):
+                styled = await self.bot.worker.rewriter.restyle(post["draft"])
         except QualityError as exc:
             return JSONResponse({"error": str(exc)}, status_code=422)
         async with self.bot.worker.lock:

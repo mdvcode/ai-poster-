@@ -69,7 +69,7 @@ async def serve(settings):
                         settings.x_bearer_token.get_secret_value(), client, store.source_is_active
                     ),
                 },
-                Rewriter(settings, client),
+                Rewriter(settings, client, store),
                 telegram,
                 settings,
             )

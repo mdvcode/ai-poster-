@@ -6,6 +6,8 @@ import io
 import httpx
 from PIL import Image, UnidentifiedImageError
 
+from ai_poster.usage import UsageMeter
+
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MODEL = "fal-ai/flux/schnell"
 
@@ -15,15 +17,22 @@ class ImageError(Exception):
 
 
 class ImageGenerator:
-    def __init__(self, settings, client: httpx.AsyncClient):
+    def __init__(self, settings, client: httpx.AsyncClient, store=None):
         self.settings = settings
         self.client = client
+        self.meter = UsageMeter(store) if store is not None else None
 
     @property
     def configured(self):
         return bool(self.settings.fal_key.get_secret_value().strip())
 
     async def generate(self, prompt: str) -> bytes:
+        if self.meter is None or not self.configured:
+            return await self._generate(prompt)
+        with self.meter.call("fal", MODEL, "image"):
+            return await self._generate(prompt)
+
+    async def _generate(self, prompt: str) -> bytes:
         if not self.configured:
             raise ImageError("Добавьте FAL_KEY в локальный .env и перезапустите сервис.")
         try:
@@ -46,6 +55,8 @@ class ImageGenerator:
                 follow_redirects=False,
             )
             response.raise_for_status()
+            if self.meter:
+                self.meter.response("fal", MODEL, {})
             result = response.json()
             if result.get("has_nsfw_concepts") != [False]:
                 raise ImageError("Изображение не прошло проверку провайдера. Измените описание.")

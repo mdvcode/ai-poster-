@@ -22,11 +22,15 @@ Collect posts from selected Telegram and X sources, turn the best stories into o
 | Step | What happens |
 | --- | --- |
 | Collect | Read only explicitly selected public Telegram channels and X accounts. Import up to 72 hours of available history when a source is connected. |
-| Select | Score relevance, usefulness, novelty and substance against editable editorial rules. Default: automation and news, at least 70/100, up to five drafts a day. |
+| Select | Score relevance, usefulness, novelty and substance against editable editorial rules. Default: automation and news, at least 70/100, up to five drafts a day. Screen a bounded, source-balanced window without waiting for the entire backlog. |
 | Write | Compose a new English post with a headline, short paragraphs, meaningful lists and restrained emphasis. |
 | Check | Compare the draft with its source for missing facts, unsupported claims and excessive similarity. Check for duplicate coverage. |
 | Review | Preview, edit, restyle, delete or manually select rejected material in the local web editor. |
 | Publish | Send the approved post to your connected Telegram channel. Keep uncertain deliveries visible instead of blindly retrying. |
+
+Source publication dates are retained. The default maximum news age is 72 hours, configurable under content rules; older material can be selected manually. Unknown legacy dates are displayed explicitly.
+
+The editor includes [AI usage and estimated costs](docs/USAGE.md) per post, day, month and processing stage. Accounting begins at installation of the usage ledger; it cannot reconstruct earlier charges.
 
 Sources are available privately in the editor. Published posts do not receive an automatic source footer.
 
