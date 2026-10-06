@@ -197,3 +197,59 @@ async def test_manual_publish_while_collection_paused(client, worker, store, tel
     assert response.json()["post"]["state"] == "published"
     telegram.send.assert_awaited_once_with("-100123", post["draft"])
     assert store.get("paused") == "1"
+
+
+async def test_archive_combines_inactive_states_without_hiding_attention(client, store):
+    from ai_poster.sources import Item
+
+    states = [
+        "ready",
+        "pending",
+        "blocked",
+        "failed",
+        "send_failed",
+        "uncertain",
+        "published",
+        "filtered",
+        "duplicate",
+        "deleted",
+        "skipped",
+    ]
+    store.ingest(
+        1,
+        [Item(str(i), f"Story {i}", "https://t.me/source/" + str(i)) for i in range(len(states))],
+        "20",
+        "-100123",
+    )
+    for post_id, state in enumerate(states, 1):
+        store.update_post(post_id, state=state)
+    archive = (await client.get("/api/posts?filter=archive")).json()
+    assert archive["total"] == 4
+    assert {p["state"] for p in archive["items"]} == {"filtered", "duplicate", "deleted", "skipped"}
+    attention = (await client.get("/api/posts?filter=blocked")).json()
+    assert attention["total"] == 4
+    assert {p["state"] for p in attention["items"]} == {
+        "blocked",
+        "failed",
+        "send_failed",
+        "uncertain",
+    }
+    assert (await client.get("/api/posts?filter=deleted")).json()["total"] == 2
+    assert (await client.get("/api/posts?filter=ready")).json()["total"] == 1
+    assert [store.post(i)["state"] for i in range(1, len(states) + 1)] == states
+
+
+async def test_archive_search_and_pagination(client, store):
+    from ai_poster.sources import Item
+
+    store.ingest(
+        1, [Item(str(i), f"Archived story {i}", "url") for i in range(25)], "25", "-100123"
+    )
+    for post_id in range(1, 26):
+        store.update_post(post_id, state="filtered")
+    first = (await client.get("/api/posts?filter=archive")).json()
+    second = (await client.get("/api/posts?filter=archive&page=1")).json()
+    assert first["total"] == second["total"] == 25
+    assert len(first["items"]) == 20 and len(second["items"]) == 5
+    assert not {p["id"] for p in first["items"]} & {p["id"] for p in second["items"]}
+    assert (await client.get("/api/posts?filter=archive&q=story%2024")).json()["total"] == 1
