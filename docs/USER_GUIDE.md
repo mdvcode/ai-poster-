@@ -12,13 +12,13 @@ Connect the destination through **Мой канал**. Both you and the bot need
 
 | Section | Meaning |
 | --- | --- |
-| Черновики | Written and checked; ready for your review. |
-| В обработке | Waiting for screening, generation, retries or daily capacity. It does not mean every row is currently running. |
-| Требуют внимания | Quality failure, API failure or uncertain delivery. Read the reason before retrying. |
-| Отклонено | Excluded by editorial rules or below the score threshold. |
-| Дубли | Detected repeated content; held out of publication. |
+| Ждут подтверждения | Written and checked; waiting for your decision to edit, publish or delete. In automatic mode this section is labelled «Готовы к публикации». |
+| Очередь | Waiting for screening, generation, retries or daily capacity. It does not mean every row is currently running. |
+| Нужно внимания | Quality failure, API failure or uncertain delivery. Read the reason before retrying. |
 | Опубликовано | Publication history. |
-| Удалено | Removed from the queue, retained for duplicate suppression and optional feedback. |
+| Архив | Rejected materials, duplicates, deleted and skipped posts; use its filters to inspect each category. |
+
+**Настройки** expands to reveal **Источники**, **Правила контента** and **Расходы AI**. The attention section stays visible while posts need intervention. Consolidating navigation does not delete stored posts, sources or duplicate history.
 
 Newly added sources import up to 72 hours of available text posts; existing sources continue from saved cursors. Collection requires **Включить сбор**. **Проверить сейчас** requests a cycle but does not override pause.
 

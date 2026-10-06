@@ -182,6 +182,7 @@ class WebAdmin:
             "blocked": ["blocked", "failed", "send_failed", "uncertain"],
             "published": ["published"],
             "deleted": ["deleted", "skipped"],
+            "archive": ["filtered", "duplicate", "deleted", "skipped"],
             "duplicate": ["duplicate"],
             "filtered": ["filtered"],
             "all": ["pending", "ready", "blocked", "failed", "send_failed", "uncertain"],
