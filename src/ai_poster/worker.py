@@ -4,13 +4,16 @@ import logging
 import time
 
 from ai_poster.ai import QualityError
-from ai_poster.telegram import TelegramError
+from ai_poster.formatting import post_kwargs
+from ai_poster.telegram import TelegramError, utf16_len
+from ai_poster.usage import usage_scope
 
 log = logging.getLogger(__name__)
 
 
-def draft_revision(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()[:12]
+def draft_revision(text: str, image_id=None) -> str:
+    body = text + ("\0" + image_id if image_id else "")
+    return hashlib.sha256(body.encode()).hexdigest()[:12]
 
 
 class Worker:
@@ -34,10 +37,20 @@ class Worker:
             return False
 
     async def preview(self, post):
-        revision = draft_revision(post["draft"])
+        revision = draft_revision(post["draft"], post["image_id"])
+        text, formatting = post_kwargs(post["draft"])
+        if post["image_id"]:
+            image = self.store.image(post["image_id"])
+            if image:
+                await self.telegram.send_photo(
+                    self.settings.owner_id,
+                    image["content"],
+                    caption="AI illustration · предпросмотр обложки",
+                )
         await self.telegram.send(
             self.settings.owner_id,
-            post["draft"],
+            text,
+            **formatting,
             reply_markup={
                 "inline_keyboard": [
                     [
@@ -57,12 +70,22 @@ class Worker:
 
     async def deliver_preview(self, post):
         current = self.store.post(post["id"])
-        if not current or current["state"] != "ready" or current["draft"] != post["draft"]:
+        if (
+            not current
+            or current["state"] != "ready"
+            or current["draft"] != post["draft"]
+            or current["image_id"] != post["image_id"]
+        ):
             return
         try:
             await self.preview(post)
             current = self.store.post(post["id"])
-            if current and current["state"] == "ready" and current["draft"] == post["draft"]:
+            if (
+                current
+                and current["state"] == "ready"
+                and current["draft"] == post["draft"]
+                and current["image_id"] == post["image_id"]
+            ):
                 self.store.update_post(post["id"], notified=1)
         except Exception as exc:
             log.warning("Draft notification failed: %s", type(exc).__name__)
@@ -91,16 +114,11 @@ class Worker:
                         )
                     self.store.source_error(source["id"], error)
             rules = self.store.content_rules()
+            self.store.expire_candidates(rules)
             if rules.enabled:
                 if self.store.drafts_today(rules) < rules.daily_limit:
                     await self.screen_candidates(rules)
-                # Finish scoring the available queue before picking the highest rated posts.
-                waiting = self.store.screening_work(rules.revision, 1)
-                candidates = (
-                    []
-                    if waiting
-                    else self.store.editorial_work(rules, self.settings.max_posts_per_cycle)
-                )
+                candidates = self.store.editorial_work(rules, self.settings.max_posts_per_cycle)
             else:
                 candidates = self.store.work("pending", self.settings.max_posts_per_cycle)
             for post in candidates:
@@ -112,6 +130,7 @@ class Worker:
                     break
                 if not self.still_pending(post, rules):
                     continue
+                self.store.set("draft_source_cursor", str(post["source_id"]))
                 self.processing_id = post["id"]
                 try:
                     exact = (
@@ -130,11 +149,12 @@ class Worker:
                     )
                     duplicate_id = exact["id"] if exact else None
                     if candidates:
-                        duplicate_id = await self.rewriter.find_duplicate(
-                            post["original"],
-                            candidates,
-                            **({"group_events": True} if rules.enabled else {}),
-                        )
+                        with usage_scope(post["id"]):
+                            duplicate_id = await self.rewriter.find_duplicate(
+                                post["original"],
+                                candidates,
+                                **({"group_events": True} if rules.enabled else {}),
+                            )
                     if not self.still_pending(post, rules):
                         continue
                     if isinstance(duplicate_id, int):
@@ -145,7 +165,8 @@ class Worker:
                             reason=f"Повтор поста #{duplicate_id}",
                         )
                         continue
-                    draft = await self.rewriter.rewrite(post["original"], post["url"])
+                    with usage_scope(post["id"]):
+                        draft = await self.rewriter.rewrite(post["original"], post["url"])
                     if not self.still_pending(post, rules):
                         continue
                     self.store.save_draft(post["id"], draft)
@@ -207,15 +228,18 @@ class Worker:
                     await self.deliver_preview(post)
 
     async def screen_candidates(self, rules):
-        for _ in range(5):
+        # Snapshot at most 50 candidates: later arrivals never extend this cycle's work.
+        window = self.store.screening_work(rules.revision, 50)
+        for offset in range(0, len(window), 10):
             if (
                 self.store.get("paused") == "1"
                 or self.store.content_rules().revision != rules.revision
             ):
                 return
-            batch = self.store.screening_work(rules.revision)
+            batch = [p for p in window[offset : offset + 10] if self.still_pending(p, rules)]
             if not batch:
-                return
+                continue
+            self.store.set("screen_source_cursor", str(batch[-1]["source_id"]))
             # Rewrite cannot safely process overlong sources either; do not truncate facts.
             for post in batch:
                 if len(post["original"]) > 16000:
@@ -226,11 +250,19 @@ class Worker:
             if not batch:
                 continue
             try:
-                results = await self.rewriter.screen(
-                    [{"id": p["id"], "text": p["original"]} for p in batch],
-                    rules,
-                    self.store.feedback_examples(),
-                )
+                with usage_scope(*(p["id"] for p in batch)):
+                    results = await self.rewriter.screen(
+                        [
+                            {
+                                "id": p["id"],
+                                "text": p["original"],
+                                "published_at": p["published_at"],
+                            }
+                            for p in batch
+                        ],
+                        rules,
+                        self.store.feedback_examples(),
+                    )
                 for result in results:
                     post = next(p for p in batch if p["id"] == result.id)
                     if (
@@ -261,6 +293,7 @@ class Worker:
             and current["state"] == "pending"
             and current["target"] == self.store.get("target")
             and (rules is None or self.store.content_rules().revision == rules.revision)
+            and (current["editorial_override"] or not self.store.stale(current, rules))
         )
 
     async def publish(self, post_id: int, *, manual: bool):
@@ -268,6 +301,22 @@ class Worker:
         post = self.store.post(post_id)
         if not post or post["state"] != "ready":
             return "Пост отсутствует, уже обработан или не прошёл проверку смысла."
+        if (
+            not manual
+            and not post["editorial_override"]
+            and not post["image_message_id"]
+            and self.store.stale(post)
+        ):
+            self.store.update_post(
+                post_id,
+                state="blocked",
+                reason="Новость устарела. Проверьте актуальность и выберите её вручную.",
+            )
+            return "Автопубликация остановлена: новость устарела."
+        if self.store.image_busy(post_id):
+            return "Дождитесь генерации картинки и проверьте результат."
+        if not manual and post["image_candidate"]:
+            return "Выберите обложку или подтвердите публикацию без картинки."
         if not manual and self.store.get("paused") == "1":
             return "Автопубликация на паузе. Сначала /resume."
         if not manual and self.store.get("mode") != "auto":
@@ -288,7 +337,29 @@ class Worker:
             return "Действует интервал публикации. Повторите позже."
         self.store.update_post(post_id, state="sending")
         try:
-            result = await self.telegram.send(post["target"], post["draft"])
+            text, formatting = post_kwargs(post["draft"])
+            if post["image_id"] and not post["image_message_id"]:
+                image = self.store.image(post["image_id"])
+                if not image:
+                    raise ValueError("Image missing")
+                if utf16_len(text) <= 1024:
+                    photo_options = (
+                        {"caption_entities": formatting["entities"]} if formatting else {}
+                    )
+                    result = await self.telegram.send_photo(
+                        post["target"], image["content"], caption=text, **photo_options
+                    )
+                else:
+                    photo = await self.telegram.send_photo(
+                        post["target"],
+                        image["content"],
+                        caption="AI illustration",
+                        disable_notification=True,
+                    )
+                    self.store.update_post(post_id, image_message_id=int(photo["message_id"]))
+                    result = await self.telegram.send(post["target"], text, **formatting)
+            else:
+                result = await self.telegram.send(post["target"], text, **formatting)
             message_id = int(result["message_id"])
         except TelegramError as exc:
             if exc.code == 429:
@@ -297,7 +368,11 @@ class Worker:
                 self.store.set("next_send", str(retry_at))
                 return "Telegram ограничил частоту. Повторите позже."
             # 5xx may occur after Telegram accepted the request.
-            state = "uncertain" if exc.code >= 500 else "send_failed"
+            state = (
+                "uncertain"
+                if (exc.code >= 500 or self.store.post(post_id)["image_message_id"])
+                else "send_failed"
+            )
             self.store.update_post(post_id, state=state, reason=str(exc))
         except Exception as exc:
             self.store.update_post(post_id, state="uncertain", reason=type(exc).__name__)

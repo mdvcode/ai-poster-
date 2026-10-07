@@ -9,3 +9,9 @@ data
 tests
 *.session*
 *.sqlite*
+
+*.swp
+*.swo
+*~
+.DS_Store
+dist

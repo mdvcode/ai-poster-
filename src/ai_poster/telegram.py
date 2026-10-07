@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 
@@ -32,6 +34,25 @@ class Telegram:
             link_preview_options={"is_disabled": True},
             **kwargs,
         )
+
+    async def send_photo(self, chat_id, content: bytes, caption="", **kwargs):
+        fields = {"chat_id": str(chat_id), "caption": caption}
+        fields.update(
+            {k: json.dumps(v) if not isinstance(v, str) else v for k, v in kwargs.items()}
+        )
+        response = await self.client.post(
+            f"{self.base}/sendPhoto",
+            data=fields,
+            files={"photo": ("illustration.jpg", content, "image/jpeg")},
+            timeout=60,
+        )
+        data = response.json()
+        if not data.get("ok"):
+            raise TelegramError(
+                data.get("error_code", response.status_code),
+                data.get("parameters", {}).get("retry_after", 0),
+            )
+        return data["result"]
 
     async def validate_channel(self, value: str, owner_id: int) -> str:
         chat = await self.call("getChat", chat_id=value)
