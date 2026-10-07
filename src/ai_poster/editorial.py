@@ -40,6 +40,7 @@ class ContentRules(BaseModel):
     extra_exclusions: str = Field(default="", max_length=2000)
     daily_limit: int = Field(default=5, ge=1, le=50)
     min_score: int = Field(default=70, ge=1, le=100)
+    max_age_hours: int = Field(default=72, ge=0, le=720)
     timezone: str = "Europe/Berlin"
 
     @field_validator("topics", "audience")

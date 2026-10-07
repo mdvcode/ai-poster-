@@ -11,3 +11,9 @@ data/
 *.sqlite*
 dist/
 *.egg-info/
+
+# Editor backups and local generated artifacts
+*.swp
+*.swo
+*~
+.DS_Store

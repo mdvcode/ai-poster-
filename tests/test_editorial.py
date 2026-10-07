@@ -263,7 +263,7 @@ async def test_claude_nested_screen_schema_and_local_bounds(settings):
             await Rewriter(settings, http).screen([{"id": 1, "text": "text"}], ContentRules(), [])
 
 
-async def test_large_queue_is_scored_before_best_post_is_selected(worker, store):
+async def test_large_queue_creates_draft_without_waiting_for_every_post(worker, store):
     setup_selection(store, worker, 1)
     ingest(store, 60)
 
@@ -272,8 +272,9 @@ async def test_large_queue_is_scored_before_best_post_is_selected(worker, store)
 
     worker.rewriter.screen.side_effect = screen
     await worker.cycle()
-    worker.rewriter.rewrite.assert_not_called()
+    assert worker.rewriter.rewrite.await_count == 1
     assert worker.rewriter.screen.await_count == 5
+    assert len(store.screening_work(store.content_rules().revision, 100)) == 10
     await worker.cycle()
     assert store.post(60)["state"] == "ready"
     assert worker.rewriter.rewrite.await_count == 1

@@ -208,7 +208,14 @@ class XSource:
                 if post.get("referenced_tweets"):
                     continue
                 body = post.get("note_tweet", {}).get("text", post["text"])
-                items.append(Item(post["id"], body, f"https://x.com/i/web/status/{post['id']}"))
+                items.append(
+                    Item(
+                        post["id"],
+                        body,
+                        f"https://x.com/i/web/status/{post['id']}",
+                        publication_time(post["created_at"]) if post.get("created_at") else None,
+                    )
+                )
             token = page.get("meta", {}).get("next_token")
             if not token:
                 return sorted(items, key=lambda item: int(item.id)), str(cursor)

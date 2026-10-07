@@ -5,11 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-poster"
 version = "0.1.0"
-description = "Telegram-controlled content curation from Telegram and X"
+description = "A local AI editorial desk for curated Telegram publishing"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.13,<5",
     "httpx>=0.28,<0.29",
+    "pillow>=11,<13",
     "pydantic-settings>=2.10,<3",
     "starlette>=0.47,<1",
     "uvicorn>=0.35,<1",
